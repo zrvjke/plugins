@@ -1,87 +1,95 @@
-(function () {
-  'use strict';
+(function(){
+    'use strict';
 
-  const PLUGIN_ID = 'rtdual';
-  const OMDB_URL  = 'https://www.omdbapi.com/';
+    var plugin_name = 'Rotten Tomatoes (OMDb Dual)';
+    var storage_key_api = 'rt_omdb_api_key';
+    var storage_key_disable_tmdb = 'rt_disable_tmdb';
 
-  // 1. Регистрируем плагин
-  Lampa.Plugin.register({
-    id: PLUGIN_ID,
-    name: 'Rotten Tomatoes (OMDb Dual)',
-    version: '1.0.0',
-    description: 'Добавляет рейтинги Rotten Tomatoes через OMDb API',
-    type: 'modify',
-    params: [
-      {
-        id: 'omdb_key',
-        type: 'input',
-        name: 'OMDb API Key',
-        placeholder: 'Введите ключ с omdbapi.com'
-      },
-      {
-        id: 'hide_tmdb',
-        type: 'checkbox',
-        name: 'Скрыть рейтинг TMDb',
-        default: false
-      }
-    ]
-  });
+    function add_settings(){
+        Lampa.SettingsApi.addComponent({
+            component: plugin_name,
+            name: plugin_name,
+            icon: '🍅',
+            onRender: function(body){
+                body.append(Lampa.Template.get('settings_input', {
+                    title: 'OMDb API Key',
+                    value: Lampa.Storage.get(storage_key_api, ''),
+                    placeholder: 'Введите API ключ OMDb'
+                }, function(value){
+                    Lampa.Storage.set(storage_key_api, value);
+                }));
 
-  // 2. Кэш и вспомогательные функции
-  const cache = {};
-  
-  function getOmdbKey() {
-    return Lampa.Params.get(PLUGIN_ID + '_omdb_key', '').trim();
-  }
-
-  async function fetchData(url) {
-    try {
-      const response = await fetch(url);
-      return await response.json();
-    } catch (e) {
-      return null;
-    }
-  }
-
-  // 3. Основная логика
-  Lampa.Listener.follow('full', async function (e) {
-    if (e.type !== 'complite') return;
-    
-    const $root = $(e.body || '.full');
-    const movie = e.data?.movie || e.data?.tv || {};
-    
-    // Скрываем TMDb рейтинг
-    if (Lampa.Params.get(PLUGIN_ID + '_hide_tmdb', false)) {
-      $root.find('.info__rate .rate:contains("TMDb")').remove();
+                body.append(Lampa.Template.get('settings_chbox', {
+                    title: 'Отключить рейтинг TMDB',
+                    checked: Lampa.Storage.get(storage_key_disable_tmdb, false)
+                }, function(value){
+                    Lampa.Storage.set(storage_key_disable_tmdb, value);
+                }));
+            },
+            onBack: function(){
+                Lampa.SettingsApi.closeComponent();
+            }
+        });
     }
 
-    // Получаем рейтинги
-    const omdbKey = getOmdbKey();
-    if (!omdbKey) {
-      Lampa.Noty.show('Введите OMDb API ключ в настройках!');
-      return;
+    function fetch_ratings(imdb_id, callback){
+        var api_key = Lampa.Storage.get(storage_key_api, '');
+        if(!api_key){
+            callback();
+            return;
+        }
+        var url = 'https://www.omdbapi.com/?i=' + imdb_id + '&apikey=' + api_key;
+        Lampa.Utils.request(url, function(json){
+            if(json && json.Ratings){
+                var critics = null, audience = null;
+                json.Ratings.forEach(function(r){
+                    if(r.Source === 'Rotten Tomatoes'){
+                        critics = r.Value;
+                    }
+                    if(r.Source === 'Rotten Tomatoes - Audience'){
+                        audience = r.Value;
+                    }
+                });
+                callback({critics: critics, audience: audience});
+            }
+            else callback();
+        }, callback);
     }
 
-    const imdbId = movie.imdb_id || '';
-    if (!imdbId) return;
+    function add_ratings_to_card(ratings){
+        var rate_line = $('.card__rate');
+        if(ratings.critics){
+            rate_line.append('<div class="rate-item"><img src="https://upload.wikimedia.org/wikipedia/commons/5/5b/Rotten_Tomatoes.svg" style="width:14px;vertical-align:middle;"> '+ratings.critics+'</div>');
+        }
+        if(ratings.audience){
+            rate_line.append('<div class="rate-item"><img src="https://upload.wikimedia.org/wikipedia/commons/5/5b/Popcorn.svg" style="width:14px;vertical-align:middle;"> '+ratings.audience+'</div>');
+        }
+    }
 
-    const url = `${OMDB_URL}?apikey=${omdbKey}&i=${imdbId}&tomatoes=true`;
-    const data = await fetchData(url);
+    function hook_movie_detail(){
+        Lampa.Listener.follow('full', function(e){
+            if(e.type === 'complite'){
+                var imdb_id = e.data.imdb_id;
+                if(!imdb_id) return;
 
-    if (!data || data.Error) return;
+                if(Lampa.Storage.get(storage_key_disable_tmdb, false)){
+                    $('.rate__item').filter(function(){
+                        return $(this).find('.rate__source').text().trim() === 'TMDb';
+                    }).remove();
+                }
 
-    // Добавляем рейтинги RT
-    const rtRating = data.Ratings?.find(r => r.Source === 'Rotten Tomatoes');
-    const tomatoMeter = rtRating?.Value || 'N/A';
-    const audienceScore = data.tomatoUserMeter || 'N/A';
+                fetch_ratings(imdb_id, function(ratings){
+                    if(ratings) add_ratings_to_card(ratings);
+                });
+            }
+        });
+    }
 
-    $root.find('.info__rate').append(`
-      <div class="rate rate--rt" style="display:flex;align-items:center;gap:8px">
-        <img src="https://www.rottentomatoes.com/assets/pizza-pie/images/icons/tomatometer/fresh.svg" width="16">
-        <span>${tomatoMeter}</span>
-        <img src="https://www.rottentomatoes.com/assets/pizza-pie/images/icons/audience/aud_score-fresh.svg" width="16">
-        <span>${audienceScore}</span>
-      </div>
-    `);
-  });
+    function start(){
+        add_settings();
+        hook_movie_detail();
+    }
+
+    Lampa.PluginApi.add(plugin_name, start, '🍅');
+
 })();
