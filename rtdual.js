@@ -15,32 +15,28 @@
     Lampa.Component.add('rotten_tomatoes_settings', {
         component: 'rotten_tomatoes_settings',
         name: 'Rotten Tomatoes (OMDb)',
-        onRender: function (element) {
-            // Поле для ввода API ключа
-            var apiInput = Lampa.SettingsApi.input({
-                name: 'apikey',
+        render: function () {
+            var html = $('<div></div>');
+            var apiInput = Lampa.Input.field({
                 title: 'OMDb API Key',
                 value: RottenTomatoes.settings.apikey,
                 placeholder: 'Введите ваш OMDb API ключ (бесплатно на omdbapi.com)',
-                change: function (value) {
+                onChange: function (value) {
                     RottenTomatoes.settings.apikey = value;
                     Lampa.Storage.set('rotten_tomatoes_apikey', value);
                 }
             });
-            element.append(apiInput.render());
-
-            // Галочка для отключения TMDB рейтинга
-            var disableToggle = Lampa.SettingsApi.toggle({
-                name: 'disable_tmdb',
+            var disableToggle = Lampa.Input.toggle({
                 title: 'Отключить рейтинг TMDB в карточках',
-                value: RottenTomatoes.settings.disable_tmdb,
-                change: function (value) {
+                checked: RottenTomatoes.settings.disable_tmdb,
+                onChange: function (value) {
                     RottenTomatoes.settings.disable_tmdb = value;
                     Lampa.Storage.set('rotten_tomatoes_disable_tmdb', value);
                     applyStyles();
                 }
             });
-            element.append(disableToggle.render());
+            html.append(apiInput).append(disableToggle);
+            return html;
         }
     });
 
@@ -49,8 +45,15 @@
         if (e.name === 'interface') {
             setTimeout(function () {
                 var component = Lampa.Component.get('rotten_tomatoes_settings');
-                var render = component.render();
-                e.body.find('.settings-param.selector[data-name="interface_size"]').before(render);
+                if (component && typeof component.render === 'function') {
+                    var render = component.render();
+                    var settingsContainer = e.body.find('.settings > div');
+                    if (settingsContainer.length) {
+                        settingsContainer.prepend(render);
+                    } else {
+                        e.body.prepend(render);
+                    }
+                }
             }, 100);
         }
     });
@@ -167,7 +170,7 @@
 
     if (!window.rotten_tomatoes_plugin) startPlugin();
 
-    // Регистрация в манифесте (без использования assign)
+    // Регистрация в манифесте
     if (Lampa.Manifest && Lampa.Manifest.plugins) {
         Lampa.Manifest.plugins['rotten_tomatoes'] = {
             name: 'Rotten Tomatoes',
