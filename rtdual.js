@@ -84,13 +84,20 @@
         return root;
     }
 
-    // Добавление пункта в настройки
+    // Функция добавления пункта в настройки
     function mountSettingsEntry() {
         function attachOnce() {
-            var menu = document.querySelector('.settings .menu .list, .settings .menu__list, .settings .scroll .list');
-            if (!menu) return;
+            console.log('Attempting to attach settings entry at:', new Date().toISOString());
+            var menu = document.querySelector('.settings .menu .list') || document.querySelector('.settings .menu__list') || document.querySelector('.settings .scroll .list');
+            if (!menu) {
+                console.log('Menu container not found. Available elements:', document.body.innerHTML.match(/class=["'][^"']*["']/g)?.join(', ') || 'None');
+                return;
+            }
 
-            if (menu.querySelector('[data-rt="rotten_tomatoes"]')) return;
+            if (menu.querySelector('[data-rt="rotten_tomatoes"]')) {
+                console.log('Entry already exists');
+                return;
+            }
 
             var item = document.createElement('div');
             item.className = 'selector';
@@ -99,6 +106,7 @@
 
             item.addEventListener('click', function () {
                 var modalContent = createSettingsComponent();
+                console.log('Opening modal with content:', modalContent.innerHTML);
                 Lampa.Modal.open({
                     title: 'Rotten Tomatoes Settings',
                     html: modalContent,
@@ -107,15 +115,30 @@
                         Lampa.Controller.toggle('settings_component');
                     }
                 });
-                console.log('Modal opened with content:', modalContent.innerHTML);
             });
 
             menu.appendChild(item);
+            console.log('Settings entry added successfully');
         }
 
-        attachOnce();
-        Lampa.Listener.follow('settings', function (e) {
-            if (e.type === 'open') setTimeout(attachOnce, 50);
+        // Запуск при готовности приложения
+        if (window.appready) {
+            attachOnce();
+        } else {
+            Lampa.Listener.follow('app', function (e) {
+                if (e.type === 'ready') {
+                    console.log('App ready, attaching settings entry');
+                    attachOnce();
+                }
+            });
+        }
+
+        // Повторная проверка при открытии настроек
+        Lampa.Listener.follow('open', function (e) {
+            if (e.name === 'settings') {
+                console.log('Settings opened, re-attaching if needed');
+                setTimeout(attachOnce, 100);
+            }
         });
     }
 
