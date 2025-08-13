@@ -20,7 +20,7 @@
         apiInput.find('input').on('input', function () {
             RottenTomatoes.settings.apikey = $(this).val();
             Lampa.Storage.set('rotten_tomatoes_apikey', $(this).val());
-            console.log('API Key updated:', $(this).val());
+            console.log('API Key updated to:', $(this).val());
         });
         html.find('.settings-param__value').eq(0).append(apiInput);
 
@@ -37,26 +37,26 @@
         return html;
     }
 
-    // Динамическое добавление секции настроек через Listener
+    // Динамическое добавление секции настроек
     Lampa.Listener.follow('app', function (e) {
         if (e.type === 'ready') {
-            console.log('App ready, attempting to add settings at:', new Date().toISOString());
+            console.log('App ready, initializing Rotten Tomatoes plugin at:', new Date().toISOString());
             Lampa.Listener.follow('open', function (e) {
                 if (e.name === 'settings') {
-                    console.log('Settings menu opened, checking container structure');
-                    var settingsContainer = $('.settings');
+                    console.log('Settings menu opened, searching for container');
+                    var settingsContainer = $('.settings, .settings-body, #settings, .main-settings'); // Попытка найти контейнер
                     if (settingsContainer.length) {
-                        console.log('Settings container found, attempting to add section');
+                        console.log('Settings container found, class:', settingsContainer.attr('class'));
                         var existingSection = settingsContainer.find('.rotten-tomatoes-settings');
                         if (!existingSection.length) {
                             var newSection = createSettingsComponent();
                             settingsContainer.append(newSection);
-                            console.log('Rotten Tomatoes section added to settings');
+                            console.log('Rotten Tomatoes section added successfully');
                         } else {
-                            console.log('Rotten Tomatoes section already exists');
+                            console.log('Rotten Tomatoes section already exists, skipping');
                         }
                     } else {
-                        console.log('Settings container not found, structure may differ. Available elements:', $('.settings, .settings-category, .settings-param'));
+                        console.log('Settings container not found. Available elements:', $('body').find('*').map(function() { return this.className; }).get().join(', '));
                     }
                 }
             });
@@ -82,7 +82,7 @@
     function getOMDbData(movie, callback) {
         var apikey = RottenTomatoes.settings.apikey;
         if (!apikey) {
-            console.log('No API key provided');
+            console.log('No API key provided, ratings will not load');
             return;
         }
 
@@ -102,32 +102,27 @@
         var timestamp = new Date().getTime();
 
         if (cache[cache_key] && (timestamp - cache[cache_key].timestamp) < 86400000) {
-            return callback(cache[cache_key].data);
+            callback(cache[cache_key].data);
+        } else {
+            var network = new Lampa.Reguest();
+            network.clear();
+            network.timeout(15000);
+            network.silent(url, function (json) {
+                if (json.Response === 'True' && json.tomatoMeter) {
+                    var data = {
+                        critic: json.tomatoMeter,
+                        audience: json.tomatoUserMeter || json.tomatoAudienceRating || 0
+                    };
+                    cache[cache_key] = { data: data, timestamp: timestamp };
+                    Lampa.Storage.set('rt_rating', cache);
+                    callback(data);
+                } else {
+                    callback(null);
+                }
+            }, function (a, c) {
+                Lampa.Noty.show('Rotten Tomatoes: ' + network.errorDecode(a, c));
+            }, false, { dataType: 'json' });
         }
-
-        var network = new Lampa.Reguest();
-        network.clear();
-        network.timeout(15000);
-        network.silent(url, function (json) {
-            if (json.Response === 'True' && json.tomatoMeter) {
-                var data = {
-                    critic: json.tomatoMeter,
-                    audience: json.tomatoUserMeter || json.tomatoAudienceRating || 0
-                };
-                cache[cache_key] = {
-                    data: data,
-                    timestamp: timestamp
-                };
-                Lampa.Storage.set('rt_rating', cache);
-                callback(data);
-            } else {
-                callback(null);
-            }
-        }, function (a, c) {
-            Lampa.Noty.show('Rotten Tomatoes: ' + network.errorDecode(a, c));
-        }, false, {
-            dataType: 'json'
-        });
     }
 
     // Функция для добавления рейтинга в элемент
