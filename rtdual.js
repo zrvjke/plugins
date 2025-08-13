@@ -12,50 +12,34 @@
     };
 
     // Компонент для настроек
-    Lampa.Component.add('rotten_tomatoes_settings', {
-        component: 'rotten_tomatoes_settings',
-        name: 'Rotten Tomatoes (OMDb)',
-        render: function () {
-            var html = $('<div></div>');
-            var apiInput = Lampa.Input.field({
-                title: 'OMDb API Key',
-                value: RottenTomatoes.settings.apikey,
-                placeholder: 'Введите ваш OMDb API ключ (бесплатно на omdbapi.com)',
-                onChange: function (value) {
-                    RottenTomatoes.settings.apikey = value;
-                    Lampa.Storage.set('rotten_tomatoes_apikey', value);
-                }
-            });
-            var disableToggle = Lampa.Input.toggle({
-                title: 'Отключить рейтинг TMDB в карточках',
-                checked: RottenTomatoes.settings.disable_tmdb,
-                onChange: function (value) {
-                    RottenTomatoes.settings.disable_tmdb = value;
-                    Lampa.Storage.set('rotten_tomatoes_disable_tmdb', value);
-                    applyStyles();
-                }
-            });
-            html.append(apiInput).append(disableToggle);
-            return html;
-        }
-    });
+    function createSettingsComponent() {
+        var html = $('<div class="settings-category rotten-tomatoes-settings"><div class="settings-param selector"><div class="settings-param__name">Rotten Tomatoes (OMDb)</div><div class="settings-param__value"></div></div></div>');
+        
+        // Поле для ввода API ключа
+        var apiInput = $('<div class="settings-param selector"><div class="settings-param__name">OMDb API Key</div><div class="settings-param__value"><input type="text" placeholder="Введите ваш OMDb API ключ (бесплатно на omdbapi.com)" value="' + RottenTomatoes.settings.apikey + '"></div></div>');
+        apiInput.find('input').on('input', function () {
+            RottenTomatoes.settings.apikey = $(this).val();
+            Lampa.Storage.set('rotten_tomatoes_apikey', $(this).val());
+        });
+        html.find('.settings-param__value').eq(0).append(apiInput);
 
-    // Добавляем компонент в меню настроек
-    Lampa.Settings.listener.follow('open', function (e) {
-        if (e.name === 'interface') {
-            setTimeout(function () {
-                var component = Lampa.Component.get('rotten_tomatoes_settings');
-                if (component && typeof component.render === 'function') {
-                    var render = component.render();
-                    var settingsContainer = e.body.find('.settings > div');
-                    if (settingsContainer.length) {
-                        settingsContainer.prepend(render);
-                    } else {
-                        e.body.prepend(render);
-                    }
-                }
-            }, 100);
-        }
+        // Переключатель для отключения TMDB
+        var disableToggle = $('<div class="settings-param selector"><div class="settings-param__name">Отключить рейтинг TMDB в карточках</div><div class="settings-param__value"><div class="toggle"><input type="checkbox" ' + (RottenTomatoes.settings.disable_tmdb ? 'checked' : '') + '><span></span></div></div></div>');
+        disableToggle.find('input').on('change', function () {
+            RottenTomatoes.settings.disable_tmdb = $(this).is(':checked');
+            Lampa.Storage.set('rotten_tomatoes_disable_tmdb', $(this).is(':checked'));
+            applyStyles();
+        });
+        html.append(disableToggle);
+
+        return html;
+    }
+
+    // Добавляем настройки в главное меню
+    Lampa.Settings.main(function (element) {
+        var settings = createSettingsComponent();
+        element.append(settings);
+        console.log('Rotten Tomatoes settings added to main settings');
     });
 
     // Функция для применения стилей отключения TMDB
