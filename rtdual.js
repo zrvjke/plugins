@@ -1,135 +1,99 @@
 (function () {
     'use strict';
 
-    // Инициализация плагина
-    var plugin = {
-        name: 'Rotten Tomatoes Ratings',
-        version: '1.0.0',
-        url: 'https://nb557.github.io/plugins/rotten_tomatoes.js'
-    };
+    Lampa.Settings.api.add('rotten_tomatoes', {
+        subtitle: 'Настройки для Rotten Tomatoes через OMDb',
+        params: [
+            {
+                name: 'apikey',
+                title: 'OMDb API Key',
+                type: 'input',
+                value: '',
+                placeholder: 'Введите ваш OMDb API ключ (бесплатно на omdbapi.com)'
+            },
+            {
+                name: 'disable_tmdb',
+                title: 'Отключить рейтинг TMDB в карточках',
+                type: 'toggle',
+                value: false
+            }
+        ]
+    });
 
-    // Настройки плагина
-    Lampa.Storage.set('rotten_tomatoes_enabled', true, true);
-    Lampa.Storage.set('tmdb_rating_enabled', true, true);
+    if (Lampa.Storage.get('rotten_tomatoes_disable_tmdb', false)) {
+        Lampa.Styles.add('hide_tmdb', '.card__rate--tmdb, .full--rating .rating-tmdb { display: none !important; }', 'rotten');
+    }
 
-    // Стили для иконок и рейтингов
-    Lampa.Utils.addStyle(`
-        .rt-tomato, .rt-popcorn {
-            display: inline-block;
-            width: 16px;
-            height: 16px;
-            margin-right: 4px;
-            vertical-align: middle;
-        }
-        .rt-tomato {
-            background: url('https://www.rottentomatoes.com/assets/pizza-pie/images/icons/tomatometer-certified.f7b67e94c56.png') no-repeat center;
-            background-size: contain;
-        }
-        .rt-popcorn {
-            background: url('https://www.rottentomatoes.com/assets/pizza-pie/images/icons/audience-verified.6daed36f15b.png') no-repeat center;
-            background-size: contain;
-        }
-        .rating-rt {
-            margin-right: 10px;
-            color: #fff;
-        }
-    `);
+    function getOMDbData(movie, callback) {
+        var apikey = Lampa.Storage.get('rotten_tomatoes_apikey', '');
+        if (!apikey) return;
 
-    // Функция для получения данных с Rotten Tomatoes
-    async function getRottenTomatoesRatings(title, year) {
-        try {
-            // Формируем URL для поиска на Rotten Tomatoes
-            var searchUrl = `https://www.rottentomatoes.com/search?search=${encodeURIComponent(title)}`;
-            var response = await Lampa.Utils.get(searchUrl);
-            var parser = new DOMParser();
-            var doc = parser.parseFromString(response, 'text/html');
+        var imdb_id = movie.imdb_id;
+        var url;
 
-            // Ищем фильм по названию и году
-            var movieLink = Array.from(doc.querySelectorAll('search-page-media-row')).find(row => {
-                var releaseYear = row.getAttribute('releaseyear');
-                return releaseYear && releaseYear.includes(year);
+        if (imdb_id) {
+            url = 'http://www.omdbapi.com/?apikey=' + apikey + '&i=' + imdb_id + '&tomatoes=true';
+        } else {
+            var title = movie.original_title || movie.title || movie.name;
+            var year = movie.year || (movie.release_date ? movie.release_date.substring(0, 4) : '');
+            url = 'http://www.omdbapi.com/?apikey=' + apikey + '&t=' + encodeURIComponent(title) + (year ? '&y=' + year : '') + '&tomatoes=true';
+        }
+
+        var cache_key = 'rt_' + (imdb_id || title + '_' + year);
+
+        var cached = Lampa.Storage.cache(cache_key, 86400); // кэш на 1 день
+        if (cached) {
+            callback(cached);
+        } else {
+            Lampa.Network.request({
+                url: url,
+                method: 'GET',
+                dataType: 'json',
+                success: function (json) {
+                    if (json.Response === 'True' && json.tomatoMeter) {
+                        var data = {
+                            critic: json.tomatoMeter,
+                            audience: json.tomatoUserMeter || 0
+                        };
+                        Lampa.Storage.cache(cache_key, 86400, data);
+                        callback(data);
+                    }
+                },
+                error: function () {}
             });
-
-            if (!movieLink) return null;
-
-            var movieUrl = movieLink.querySelector('a').href;
-            var movieResponse = await Lampa.Utils.get(movieUrl);
-            var movieDoc = parser.parseFromString(movieResponse, 'text/html');
-
-            var tomatoMeter = movieDoc.querySelector('#topSection .thumbnail-scoreboard-wrap [data-qa="tomatometer"]')?.textContent.trim() || 'N/A';
-            var popcornMeter = movieDoc.querySelector('#topSection .thumbnail-scoreboard-wrap [data-qa="audience-rating"]')?.textContent.trim() || 'N/A';
-
-            return {
-                tomato: tomatoMeter,
-                popcorn: popcornMeter
-            };
-        } catch (e) {
-            console.log('Rotten Tomatoes Plugin: Error fetching ratings', e);
-            return null;
         }
     }
 
-    // Перехват рендеринга карточки контента
-    var originalCardRender = Lampa.Template.card;
-    Lampa.Template.card = function (data, params) {
-        var card = originalCardRender.call(this, data, params);
+    function addRating(element, selector, data) {
+        var critic_color = parseInt(data.critic) >= 60 ? '#32CD32' : '#FF4500';
+        var audience_color = parseInt(data.audience) >= 60 ? '#32CD32' : '#FF4500';
 
-        if (Lampa.Storage.get('rotten_tomatoes_enabled', true)) {
-            var title = data.title || data.name;
-            var year = data.release_date ? data.release_date.split('-')[0] : data.first_air_date ? data.first_air_date.split('-')[0] : '';
+        var html = '<span class="rt-rating critic" style="margin-left: 5px; color: ' + critic_color + '; font-size: 0.9em;">🍅 ' + data.critic + '%</span>';
+        html += '<span class="rt-rating audience" style="margin-left: 5px; color: ' + audience_color + '; font-size: 0.9em;">🍿 ' + data.audience + '%</span>';
 
-            getRottenTomatoesRatings(title, year).then(ratings => {
-                if (ratings) {
-                    var ratingContainer = card.querySelector('.card__rating');
-                    if (ratingContainer) {
-                        ratingContainer.insertAdjacentHTML('beforeend', `
-                            <span class="rating-rt"><span class="rt-tomato"></span>${ratings.tomato}</span>
-                            <span class="rating-rt"><span class="rt-popcorn"></span>${ratings.popcorn}</span>
-                        `);
-                    }
-                }
-            });
-        }
+        element.find(selector).append(html);
+    }
 
-        // Отключение TMDb, если выбрано в настройках
-        if (!Lampa.Storage.get('tmdb_rating_enabled', true)) {
-            var tmdbRating = card.querySelector('.card__rating [class*="tmdb"]');
-            if (tmdbRating) tmdbRating.style.display = 'none';
-        }
-
-        return card;
-    };
-
-    // Добавление настроек в интерфейс Lampa
-    Lampa.Settings.listener.follow('open', function (e) {
-        if (e.name === 'main') {
-            var settings = e.body.find('.settings__content');
-            if (settings && !settings.find('.rt-settings')) {
-                settings.append(`
-                    <div class="rt-settings">
-                        <div class="settings__item">
-                            <input type="checkbox" id="rt_enabled" ${Lampa.Storage.get('rotten_tomatoes_enabled', true) ? 'checked' : ''}>
-                            <label for="rt_enabled">Показывать рейтинги Rotten Tomatoes</label>
-                        </div>
-                        <div class="settings__item">
-                            <input type="checkbox" id="tmdb_enabled" ${Lampa.Storage.get('tmdb_rating_enabled', true) ? 'checked' : ''}>
-                            <label for="tmdb_enabled">Показывать рейтинг TMDb</label>
-                        </div>
-                    </div>
-                `);
-
-                settings.find('#rt_enabled').on('change', function () {
-                    Lampa.Storage.set('rotten_tomatoes_enabled', this.checked, true);
-                    Lampa.Controller.update();
-                });
-
-                settings.find('#tmdb_enabled').on('change', function () {
-                    Lampa.Storage.set('tmdb_rating_enabled', this.checked, true);
-                    Lampa.Controller.update();
+    Lampa.Listener.follow('hover', function (e) {
+        if (e.type === 'card') {
+            var card = e.card;
+            if (card.find('.rt-rating').length === 0) {
+                var movie = e.item;
+                getOMDbData(movie, function (data) {
+                    addRating($(card), '.card__rate, .card__rating', data);
                 });
             }
         }
     });
 
-    console.log('Rotten Tomatoes Plugin loaded:', plugin);
+    Lampa.Listener.follow('full', function (e) {
+        var body = e.body;
+        if (body.find('.rt-rating').length === 0) {
+            var movie = e.data.movie;
+            getOMDbData(movie, function (data) {
+                addRating(body, '.full--rating, .full--info .rating', data);
+            });
+        }
+    });
+
 })();
