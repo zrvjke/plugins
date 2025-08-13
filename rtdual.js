@@ -11,7 +11,40 @@
         }
     };
 
-    // Регистрация настроек через API
+    // Функция для создания секции настроек
+    function createSettingsComponent() {
+        var html = $('<div class="settings-category rotten-tomatoes-settings"><div class="settings-param selector"><div class="settings-param__name">Rotten Tomatoes (OMDb)</div><div class="settings-param__value"></div></div></div>');
+
+        // Поле для ввода API ключа
+        var apiInput = $('<div class="settings-param selector"><div class="settings-param__name">OMDb API Key</div><div class="settings-param__value"><input type="text" placeholder="Введите ваш OMDb API ключ (бесплатно на omdbapi.com)" value="' + RottenTomatoes.settings.apikey + '"></div></div>');
+        apiInput.find('input').on('input', function () {
+            RottenTomatoes.settings.apikey = $(this).val();
+            Lampa.Storage.set('rotten_tomatoes_apikey', $(this).val());
+            console.log('API Key updated:', $(this).val());
+        });
+        html.find('.settings-param__value').eq(0).append(apiInput);
+
+        // Переключатель для отключения TMDB
+        var disableToggle = $('<div class="settings-param selector"><div class="settings-param__name">Отключить рейтинг TMDB в карточках</div><div class="settings-param__value"><div class="toggle"><input type="checkbox" ' + (RottenTomatoes.settings.disable_tmdb ? 'checked' : '') + '><span></span></div></div></div>');
+        disableToggle.find('input').on('change', function () {
+            RottenTomatoes.settings.disable_tmdb = $(this).is(':checked');
+            Lampa.Storage.set('rotten_tomatoes_disable_tmdb', $(this).is(':checked'));
+            applyStyles();
+            console.log('TMDB disabled:', $(this).is(':checked'));
+        });
+        html.append(disableToggle);
+
+        return html;
+    }
+
+    // Добавление секции в настройки
+    Lampa.Settings.main(function (element) {
+        var settings = createSettingsComponent();
+        element.append(settings);
+        console.log('Rotten Tomatoes settings added to main settings at:', new Date().toISOString());
+    });
+
+    // Альтернативный способ через Lampa.Settings.api (если поддерживается)
     Lampa.Settings.api.add('rotten_tomatoes', {
         subtitle: 'Настройки для Rotten Tomatoes через OMDb',
         params: [
@@ -24,7 +57,7 @@
                 onChange: function (value) {
                     RottenTomatoes.settings.apikey = value;
                     Lampa.Storage.set('rotten_tomatoes_apikey', value);
-                    console.log('API Key changed:', value);
+                    console.log('API Key changed via api:', value);
                 }
             },
             {
@@ -36,7 +69,7 @@
                     RottenTomatoes.settings.disable_tmdb = value;
                     Lampa.Storage.set('rotten_tomatoes_disable_tmdb', value);
                     applyStyles();
-                    console.log('TMDB disabled:', value);
+                    console.log('TMDB disabled via api:', value);
                 }
             }
         ]
@@ -51,44 +84,15 @@
             style.innerHTML = '.card__rate--tmdb, .full--rating .rating-tmdb { display: none !important; }';
             document.head.appendChild(style);
         }
-        console.log('Styles applied, TMDB disabled:', RottenTomatoes.settings.disable_tmdb);
     }
 
     // Изначальное применение стилей
     applyStyles();
 
-    // Динамическое добавление секции настроек через Listener
-    Lampa.Listener.follow('app', function (e) {
-        if (e.type === 'ready') {
-            console.log('App ready, attempting to add settings');
-            Lampa.Settings.listener.follow('open', function (e) {
-                if (e.name === 'settings') {
-                    console.log('Settings menu opened, checking for rotten_tomatoes section');
-                    var settingsContainer = $('.settings > .settings-category, .settings > div');
-                    if (settingsContainer.length) {
-                        var existingSection = settingsContainer.find('[data-name="rotten_tomatoes"]');
-                        if (!existingSection.length) {
-                            var newSection = $('<div class="settings-category" data-name="rotten_tomatoes"><div class="settings-param selector"><div class="settings-param__name">Rotten Tomatoes (OMDb)</div><div class="settings-param__value"></div></div></div>');
-                            settingsContainer.append(newSection);
-                            console.log('Rotten Tomatoes section added to settings');
-                        } else {
-                            console.log('Rotten Tomatoes section already exists');
-                        }
-                    } else {
-                        console.log('Settings container not found, structure may differ');
-                    }
-                }
-            });
-        }
-    });
-
     // Функция для получения данных из OMDb
     function getOMDbData(movie, callback) {
         var apikey = RottenTomatoes.settings.apikey;
-        if (!apikey) {
-            console.log('No API key provided');
-            return;
-        }
+        if (!apikey) return;
 
         var imdb_id = movie.imdb_id || movie.imdbId;
         var url;
