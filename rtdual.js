@@ -1,259 +1,315 @@
 (function () {
-    'use strict';
+  'use strict';
 
-    // Основной объект плагина
-    var RottenTomatoes = {
-        name: 'rotten_tomatoes',
-        version: '1.0.0',
-        settings: {
-            apikey: Lampa.Storage.get('rotten_tomatoes_apikey', ''),
-            disable_tmdb: Lampa.Storage.get('rotten_tomatoes_disable_tmdb', false)
+  // ====== Настройки / хранение ======
+  var STORAGE_KEY_API = 'rt_omdb_api';
+  var STORAGE_KEY_HIDE_TMDB = 'rt_hide_tmdb';
+  var STORAGE_KEY_CACHE = 'rt_omdb_cache'; // объект { [imdbID или <title|year|type> ]: { critics: n, audience: n, ts: ms } }
+
+  var CACHE_TTL = 24 * 60 * 60 * 1000; // 24 часа
+
+  function getApiKey() { return (Lampa.Storage.get(STORAGE_KEY_API) || '').trim(); }
+  function getHideTmdb() { return !!Lampa.Storage.get(STORAGE_KEY_HIDE_TMDB); }
+
+  function readCache() {
+    return Lampa.Storage.cache(STORAGE_KEY_CACHE, 1000, {}); // до 1000 ключей
+  }
+  function writeCache(obj) {
+    Lampa.Storage.set(STORAGE_KEY_CACHE, obj);
+  }
+  function getFromCache(key) {
+    var c = readCache();
+    if (c[key] && (Date.now() - (c[key].ts || 0)) < CACHE_TTL) return c[key];
+    return null;
+  }
+  function putToCache(key, data) {
+    var c = readCache();
+    c[key] = Object.assign({}, data, { ts: Date.now() });
+    writeCache(c);
+    return c[key];
+  }
+
+  // ====== Утилиты ======
+  function pickRTNumbers(omdbJson) {
+    // OMDb: Ratings: [{Source:"Rotten Tomatoes", Value:"84%"}, {Source:"Internet Movie Database", Value:"7.8/10"}, ...]
+    var r = { critics: null, audience: null };
+    if (!omdbJson) return r;
+
+    // Rotten “tomatometer” критиков:
+    var tomatoCrit = null;
+    // Audience score OMDb отдает либо в Ratings (редко), либо в полях tomato* если включено ?
+    // Надежно: попробуем из Ratings; если нет — null
+    if (Array.isArray(omdbJson.Ratings)) {
+      omdbJson.Ratings.forEach(function (it) {
+        if (it && typeof it.Source === 'string') {
+          var s = it.Source.toLowerCase();
+          if (s.indexOf('rotten') !== -1 && typeof it.Value === 'string' && it.Value.indexOf('%') > -1) {
+            tomatoCrit = parseInt(it.Value, 10);
+          }
         }
-    };
+      });
+    }
+    r.critics = Number.isFinite(tomatoCrit) ? tomatoCrit : null;
 
-    // Функция создания секции настроек
-    function createSettingsComponent() {
-        var root = document.createElement('div');
-        root.className = 'about';
-        root.style.padding = '10px 0';
+    // Audience: OMDb бесплатный тариф обычно не отдает audience; но многие тайтлы содержат "tomatoUserRating" в альтернативных зеркалах.
+    // Попробуем найти “tomatoUserMeter” в произвольных полях (на случай прокси OMDb). Безопасный парс:
+    var userMeter = null;
+    Object.keys(omdbJson).forEach(function (k) {
+      if (/tomat[o]?user[a-z]*|audience/i.test(k)) {
+        var val = omdbJson[k];
+        if (typeof val === 'string' && val.indexOf('%') > -1) {
+          var n = parseInt(val, 10);
+          if (Number.isFinite(n)) userMeter = n;
+        } else if (typeof val === 'number' && val >= 0 && val <= 100) {
+          userMeter = Math.round(val);
+        }
+      }
+    });
+    r.audience = Number.isFinite(userMeter) ? userMeter : null;
 
-        // API Key field
-        var apiDiv = document.createElement('div');
-        apiDiv.className = 'settings-param selector';
-        var apiName = document.createElement('div');
-        apiName.className = 'settings-param__name';
-        apiName.textContent = 'OMDb API ключ';
-        var apiValue = document.createElement('div');
-        apiValue.className = 'settings-param__value';
-        var apiInput = document.createElement('input');
-        apiInput.type = 'text';
-        apiInput.placeholder = 'Введите ваш OMDb API ключ (omdbapi.com)';
-        apiInput.value = RottenTomatoes.settings.apikey;
-        apiInput.style.width = '100%';
-        apiInput.style.padding = '5px';
-        apiInput.addEventListener('input', function () {
-            RottenTomatoes.settings.apikey = this.value;
-            Lampa.Storage.set('rotten_tomatoes_apikey', this.value);
-            console.log('API Key updated to:', this.value);
-            Lampa.Noty.show('API ключ сохранен');
-        });
-        apiValue.appendChild(apiInput);
-        apiDiv.appendChild(apiName);
-        apiDiv.appendChild(apiValue);
-        root.appendChild(apiDiv);
+    // Если аудитории нет — оставим null. Иконку покажем только для доступных чисел.
+    return r;
+  }
 
-        // TMDB toggle
-        var tmdbDiv = document.createElement('div');
-        tmdbDiv.className = 'settings-param selector';
-        var tmdbName = document.createElement('div');
-        tmdbName.className = 'settings-param__name';
-        tmdbName.textContent = 'Скрывать рейтинг TMDb в карточке';
-        var tmdbValue = document.createElement('div');
-        tmdbValue.className = 'settings-param__value';
-        var tmdbLabel = document.createElement('label');
-        var tmdbCheckbox = document.createElement('input');
-        tmdbCheckbox.type = 'checkbox';
-        tmdbCheckbox.checked = RottenTomatoes.settings.disable_tmdb;
-        tmdbCheckbox.addEventListener('change', function () {
-            RottenTomatoes.settings.disable_tmdb = this.checked;
-            Lampa.Storage.set('rotten_tomatoes_disable_tmdb', this.checked);
-            applyStyles();
-            console.log('TMDB disabled:', this.checked);
-            Lampa.Noty.show(this.checked ? 'TMDb будет скрыт' : 'TMDb будет показан');
-        });
-        tmdbLabel.appendChild(tmdbCheckbox);
-        tmdbLabel.appendChild(document.createTextNode(' Включить'));
-        tmdbValue.appendChild(tmdbLabel);
-        tmdbDiv.appendChild(tmdbName);
-        tmdbDiv.appendChild(tmdbValue);
-        root.appendChild(tmdbDiv);
+  function byImdbKey(card) {
+    // формируем стабильный ключ кэша
+    if (card && card.imdb_id) return 'imdb:' + card.imdb_id;
+    var title = (card.original_title || card.original_name || card.title || card.name || '').trim();
+    var date = (card.release_date || card.first_air_date || card.last_air_date || '0000').slice(0, 4);
+    var type = card.media_type || card.type || (card.number_of_seasons ? 'series' : 'movie');
+    return 't:' + title.toLowerCase() + '|' + date + '|' + type;
+  }
 
-        // Help info
-        var helpDiv = document.createElement('div');
-        helpDiv.className = 'settings-param selector';
-        var helpName = document.createElement('div');
-        helpName.className = 'settings-param__name';
-        helpName.textContent = 'Где взять ключ OMDb?';
-        var helpValue = document.createElement('div');
-        helpValue.className = 'settings-param__value';
-        helpValue.textContent = 'Получите бесплатный ключ на omdbapi.com (Email → API Key)';
-        helpDiv.appendChild(helpName);
-        helpDiv.appendChild(helpValue);
-        root.appendChild(helpDiv);
+  // ====== Иконки (inline SVG) ======
+  var ICON_TOMATO =
+    'data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgMjQgMjQiIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBmaWxsPSIjZTYzMzM0IiBkPSJNMTIuMDIgNC4yYy0uNjUtMS43LTEuOTQtMy0zLjYtMy40LjI2IDEuMTkuMDcgMi40NC0uNTQgMy41Ni0uNDguOS0xLjI0IDEuNjYtMi4xNCAyLjE2QzYuNDQgNi4xIDYuMiA2LjE3IDYuMDkgNi4xYTUuNyA1LjcgMCAwIDAtMS43Ny0uNDljLS4yNy0uMDktLjU2LjA0LS42Ni4zLS4xMS4yNy4wNC41Ny4zMS42NiAxLjA4LjM2IDIuMjguNjMgMy42Ny42MyAzLjM1IDAgNi4xLTEuOTkgNy4yNi00LjYyLjExLjAxLjIyLjAxLjMzLjAxYzIuNzggMCA1LjA0LTEuNjEgNS4wNC0zLjYxIDAtMS41OC0xLjQ4LTIuOTUtMy41Ny0zLjQxLTEuMjEuMjUtMi4zNC45Ni0yLjkxIDEuOTYtLjM4LS4zLTEuMDctLjg3LTEuNTEtMS44OHoiLz48Y2lyY2xlIGN4PSIxMiIgY3k9IjE0LjUiIHI9IjYuNSIgZmlsbD0iI2ZmMjIyNSIvPjwvc3ZnPg==';
+  var ICON_POPCORN =
+    'data:image/svg+xml;base64,PHN2ZyB2aWV3Qm94PSIwIDAgMjQgMjQiIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBmaWxsPSIjRkNDRTAwIiBkPSJNNSA3aDE0bC0xIDExYy0uMDguODktLjc5IDEuNi0xLjY5IDEuNkg3LjY5QzYuNzcgMTkuNiA2LjA3IDE4Ljg5IDYgMTh6Ii8+PHBhdGggZmlsbD0iI0ZGRiIgZD0iTTE5IDdhMiAyIDAgMSAwIDAtNCAyIDIgMCAwIDAgMCA0ek05IDdhMiAyIDAgMSAwIDAtNCAyIDIgMCAwIDAgMCA0ek0xNC41IDZhMiAyIDAgMSAwIDAtNCAyIDIgMCAwIDAgMCA0eiIvPjwvc3ZnPg==';
 
-        return root;
+  function renderBadge(value, title, iconDataURL) {
+    if (!Number.isFinite(value)) return '';
+    var pct = Math.max(0, Math.min(100, Math.round(value)));
+    // Цвет по шкале RT
+    var color = pct >= 75 ? '#21d07a' : (pct >= 60 ? '#f1c40f' : '#e74c3c');
+
+    return (
+      '<div class="rate rt-badge" style="display:flex;align-items:center;gap:.35em;margin-right:.6em">' +
+        '<img src="'+iconDataURL+'" alt="" style="width:1.1em;height:1.1em;display:block"/>' +
+        '<div style="color:'+color+';font-weight:600">'+ pct + '%</div>' +
+        '<div style="opacity:.65;font-size:.85em">'+ title +'</div>' +
+      '</div>'
+    );
+  }
+
+  // ====== Запрос к OMDb ======
+  function fetchRT(card, done, fail) {
+    var api = getApiKey();
+    var network = new Lampa.Reguest();
+    var key = byImdbKey(card);
+    var cached = getFromCache(key);
+    if (cached) { done(cached); return; }
+
+    if (!api) {
+      done({ critics: null, audience: null, note: 'no_api' });
+      return;
     }
 
-    // Функция добавления пункта в настройки
-    function mountSettingsEntry() {
-        function attachOnce() {
-            console.log('Attempting to attach settings entry at:', new Date().toISOString());
-            var menu = document.querySelector('.settings .menu .list') || document.querySelector('.settings .menu__list') || document.querySelector('.settings .scroll .list');
-            if (!menu) {
-                console.log('Menu container not found. Available elements:', document.body.innerHTML.match(/class=["'][^"']*["']/g)?.join(', ') || 'None');
-                return;
-            }
-
-            if (menu.querySelector('[data-rt="rotten_tomatoes"]')) {
-                console.log('Entry already exists');
-                return;
-            }
-
-            var item = document.createElement('div');
-            item.className = 'selector';
-            item.setAttribute('data-rt', 'rotten_tomatoes');
-            item.innerHTML = '<div class="name">🍅 Rotten Tomatoes</div>';
-
-            item.addEventListener('click', function () {
-                var modalContent = createSettingsComponent();
-                console.log('Opening modal with content:', modalContent.innerHTML);
-                Lampa.Modal.open({
-                    title: 'Rotten Tomatoes Settings',
-                    html: modalContent,
-                    onBack: function () {
-                        Lampa.Modal.close();
-                        Lampa.Controller.toggle('settings_component');
-                    }
-                });
-            });
-
-            menu.appendChild(item);
-            console.log('Settings entry added successfully');
-        }
-
-        // Запуск при готовности приложения
-        if (window.appready) {
-            attachOnce();
-        } else {
-            Lampa.Listener.follow('app', function (e) {
-                if (e.type === 'ready') {
-                    console.log('App ready, attaching settings entry');
-                    attachOnce();
-                }
-            });
-        }
-
-        // Повторная проверка при открытии настроек
-        Lampa.Listener.follow('open', function (e) {
-            if (e.name === 'settings') {
-                console.log('Settings opened, re-attaching if needed');
-                setTimeout(attachOnce, 100);
-            }
-        });
+    var url;
+    if (card.imdb_id) {
+      url = 'https://www.omdbapi.com/?i=' + encodeURIComponent(card.imdb_id) + '&apikey=' + encodeURIComponent(api);
+    } else {
+      var title = (card.original_title || card.original_name || card.title || card.name || '').trim();
+      var year = (card.release_date || card.first_air_date || card.last_air_date || '').slice(0,4);
+      var type = card.media_type || card.type || (card.number_of_seasons ? 'series' : 'movie');
+      url = 'https://www.omdbapi.com/?t=' + encodeURIComponent(title);
+      if (year) url += '&y=' + encodeURIComponent(year);
+      if (type === 'tv' || type === 'series') url += '&type=series';
+      url += '&apikey=' + encodeURIComponent(api);
     }
 
-    // Применение стилей для отключения TMDB
-    function applyStyles() {
-        var style = document.getElementById('rotten_tomatoes_styles');
-        if (style) style.remove();
-        if (RottenTomatoes.settings.disable_tmdb) {
-            style = document.createElement('style');
-            style.id = 'rotten_tomatoes_styles';
-            style.textContent = '.card__rate--tmdb, .full--rating .rating-tmdb { display: none !important; }';
-            document.head.appendChild(style);
-        }
-        console.log('Styles applied, TMDB disabled:', RottenTomatoes.settings.disable_tmdb);
+    network.clear();
+    network.timeout(15000);
+    network.silent(url, function (json) {
+      if (!json || json.Response === 'False') {
+        fail && fail('OMDb: ' + (json && json.Error ? json.Error : 'no data'));
+        done({ critics: null, audience: null });
+        return;
+      }
+      var picked = pickRTNumbers(json);
+      putToCache(key, picked);
+      done(picked);
+    }, function (a, c) {
+      fail && fail(network.errorDecode(a, c));
+      done({ critics: null, audience: null });
+    }, false, {});
+  }
+
+  // ====== Рендер в карточке ======
+  function injectBadges(render, critics, audience) {
+    // ищем контейнер c рейтингами (как в rating.js — рядом с .info__rate)
+    var $render = $(render);
+    var $infoRate = $render.find('.info__rate');
+    if (!$infoRate.length) {
+      // альтернативные контейнеры в разных версиях
+      $infoRate = $render.find('.full-start__rate, .full-start-new__rate, .full-start__tags');
     }
+    if (!$infoRate.length) return;
 
-    // Изначальное применение стилей
-    applyStyles();
+    // Удалим наши старые бейджи, если перерисовка
+    $infoRate.find('.rt-badge').remove();
 
-    // Получение данных из OMDb
-    function getOMDbData(movie, callback) {
-        var apikey = RottenTomatoes.settings.apikey;
-        if (!apikey) {
-            console.log('No API key provided, ratings will not load');
-            return;
-        }
+    var html = '';
+    if (Number.isFinite(critics)) html += renderBadge(critics, 'RT Critics', ICON_TOMATO);
+    if (Number.isFinite(audience)) html += renderBadge(audience, 'RT Audience', ICON_POPCORN);
 
-        var imdb_id = movie.imdb_id || movie.imdbId;
-        var url = imdb_id ? 'http://www.omdbapi.com/?apikey=' + apikey + '&i=' + imdb_id + '&tomatoes=true' : 'http://www.omdbapi.com/?apikey=' + apikey + '&t=' + encodeURIComponent(movie.title || movie.name) + '&y=' + (movie.year || '') + '&tomatoes=true';
+    if (!html) return;
 
-        var cache_key = 'rt_' + (imdb_id || encodeURIComponent(movie.title + '_' + (movie.year || '')));
-        var cache = Lampa.Storage.cache('rt_rating', 500, {});
-        var timestamp = new Date().getTime();
-
-        if (cache[cache_key] && (timestamp - cache[cache_key].timestamp) < 86400000) {
-            callback(cache[cache_key].data);
-        } else {
-            var network = new Lampa.Reguest();
-            network.clear();
-            network.timeout(15000);
-            network.silent(url, function (json) {
-                if (json.Response === 'True' && json.tomatoMeter) {
-                    var data = {
-                        critic: json.tomatoMeter,
-                        audience: json.tomatoUserMeter || json.tomatoAudienceRating || 0
-                    };
-                    cache[cache_key] = { data: data, timestamp: timestamp };
-                    Lampa.Storage.set('rt_rating', cache);
-                    callback(data);
-                } else {
-                    callback(null);
-                }
-            }, function (a, c) {
-                Lampa.Noty.show('Rotten Tomatoes: ' + network.errorDecode(a, c));
-            }, false, { dataType: 'json' });
-        }
+    // Вклеиваем рядом с существующими рейтингами (после IMDB/KP)
+    // у rating.js добавление идет через .after(...) от .info__rate — поддержим то же место:
+    if ($render.find('.info__rate').length) {
+      $render.find('.info__rate').append(html);
+    } else {
+      $infoRate.append(html);
     }
+  }
 
-    // Добавление рейтинга в элемент
-    function addRating(element, data) {
-        if (!data) return;
+  // ====== Сокрытие TMDB при опции ======
+  function applyHideTmdbIn(renderRoot) {
+    var hide = getHideTmdb();
+    var $root = $(renderRoot || document.body);
+    // Максимально щадящий набор селекторов для “tmdb” показателей
+    var selectors = [
+      '.info__rate .rate--tmdb',
+      '.full-start__rate .rate--tmdb',
+      '.full-start-new__rate .rate--tmdb',
+      '.full-start__vote',           // старые варианты блока с голосом TMDB
+      '.full-start-new__vote'
+    ];
+    selectors.forEach(function (sel) {
+      var $elem = $root.find(sel);
+      if ($elem.length) {
+        if (hide) $elem.addClass('rt-hide'); else $elem.removeClass('rt-hide');
+      }
+    });
+  }
 
-        var critic_color = parseInt(data.critic) >= 60 ? '#32CD32' : '#FF4500';
-        var audience_color = parseInt(data.audience) >= 60 ? '#32CD32' : '#FF4500';
+  // Подключаем небольшой CSS (чтобы не рушить верстку)
+  (function addBaseCss(){
+    var css = document.createElement('style');
+    css.id = 'rt-omdb-css';
+    css.textContent = `
+      .rt-badge{white-space:nowrap}
+      .rt-hide{display:none !important}
+    `;
+    document.head.appendChild(css);
+  })();
 
-        var html = '<span class="rt-rating critic" style="margin-left: 5px; color: ' + critic_color + '; font-size: 0.9em;">🍅 ' + data.critic + '%</span>';
-        html += '<span class="rt-rating audience" style="margin-left: 5px; color: ' + audience_color + '; font-size: 0.9em;">🍿 ' + data.audience + '%</span>';
+  // ====== Меню настроек ======
+  function openSettingsModal() {
+    var api = getApiKey();
+    var hide = getHideTmdb();
 
-        var target = element.querySelector('.card__rate, .card__rating, .full--rating, .full--info .rating');
-        if (target) {
-            target.insertAdjacentHTML('beforeend', html);
-        }
-    }
+    var $wrap = $('<div class="about" style="padding:1em"></div>');
+    var $title = $('<div class="about__title">Rotten Tomatoes (OMDb)</div>');
+    var $descr = $('<div class="about__text" style="opacity:.8;margin-bottom:1em">Введите OMDb API ключ и (опционально) отключите TMDB-рейтинг в карточках.</div>');
+    var $input = $('<input type="text" class="input" placeholder="OMDb API key" style="width:100%;margin:.5em 0 1em 0">').val(api);
+    var $toggle = $('<label class="checkbox"><input type="checkbox"><span>Скрывать TMDB-рейтинг</span></label>');
+    $toggle.find('input')[0].checked = hide;
 
-    // Слушатели для карточек
-    Lampa.Listener.follow('hover', function (e) {
-        if (e.type === 'card') {
-            var card = e.card;
-            if (!card.querySelector('.rt-rating')) {
-                var movie = e.item;
-                getOMDbData(movie, function (data) {
-                    if (data) addRating(card, data);
-                });
-            }
-        }
+    var $row = $('<div style="display:flex;gap:.6em;margin-top:1em"></div>');
+    var $save = $('<div class="button selector">Сохранить</div>');
+    var $cancel = $('<div class="button selector">Закрыть</div>');
+
+    $row.append($save, $cancel);
+    $wrap.append($title, $descr, $input, $toggle, $row);
+
+    Lampa.Modal.open({
+      title: 'Настройки плагина',
+      html: $wrap,
+      size: 'medium',
+      onBack: function () { Lampa.Modal.close(); }
     });
 
-    Lampa.Listener.follow('full', function (e) {
-        if (e.type === 'complite') {
-            var body = e.object.activity.render();
-            if (!body.querySelector('.rt-rating')) {
-                var movie = e.data.movie;
-                getOMDbData(movie, function (data) {
-                    if (data) addRating(body, data);
-                });
-            }
-        }
+    $save.on('click', function(){
+      var newApi = ($input.val() || '').trim();
+      var newHide = !!$toggle.find('input')[0].checked;
+      Lampa.Storage.set(STORAGE_KEY_API, newApi);
+      Lampa.Storage.set(STORAGE_KEY_HIDE_TMDB, newHide);
+      // принудительно применим скрытие прямо сейчас
+      applyHideTmdbIn(document.body);
+      Lampa.Noty.show('Сохранено');
+      Lampa.Modal.close();
+    });
+    $cancel.on('click', function(){ Lampa.Modal.close(); });
+
+    // Фокус для пульта
+    Lampa.Controller.add('rt_settings', {
+      toggle: function(){},
+      left: function(){},
+      right: function(){},
+      up: function(){},
+      down: function(){},
+      back: function(){ Lampa.Modal.close(); }
+    });
+    Lampa.Controller.toggle('rt_settings');
+  }
+
+  // Добавим пункт в системные Настройки (как у interface_mod — отдельный подпункт)
+  function registerSettingsEntry() {
+    if (!Lampa.Settings || !Lampa.Settings.add) return;
+
+    // Группа “more” обычно есть в Лампе — поместим туда
+    Lampa.Settings.add({
+      title: 'Rotten Tomatoes (OMDb)',
+      group: ['more', 'Ещё'],
+      subtitle: 'RT критики и зрители · OMDb',
+      onSelect: function(){ openSettingsModal(); },
+      onLong: function(){ openSettingsModal(); }
     });
 
-    // Запуск плагина
-    function startPlugin() {
-        window.rotten_tomatoes_plugin = true;
-        mountSettingsEntry();
-    }
+    // На изменение настроек (если кто-то правит Storage со стороны)
+    Lampa.Settings.listener.follow('open', function(e){
+      if (e.name === 'more') {
+        // актуализируем скрытие
+        applyHideTmdbIn(document.body);
+      }
+    });
+  }
 
-    if (!window.rotten_tomatoes_plugin) startPlugin();
+  // ====== Основной хук на карточку ======
+  function hookFullCards() {
+    Lampa.Listener.follow('full', function(e){
+      if (e.type !== 'complite' || !e.data || !e.data.movie) return;
 
-    // Регистрация в манифесте
-    if (Lampa.Manifest && Lampa.Manifest.plugins) {
-        Lampa.Manifest.plugins['rotten_tomatoes'] = {
-            name: 'Rotten Tomatoes',
-            version: RottenTomatoes.version,
-            description: 'Добавляет рейтинги Rotten Tomatoes в карточки'
-        };
-    }
+      var render = e.object && e.object.activity ? e.object.activity.render() : null;
+      if (!render) return;
 
-    window.rotten_tomatoes = RottenTomatoes;
+      // Применяем скрытие TMDB по опции
+      applyHideTmdbIn(render);
+
+      // Попросим OMDb
+      fetchRT(e.data.movie, function (res) {
+        if (!render) return;
+        injectBadges(render, res.critics, res.audience);
+      }, function(err){
+        // Тихо: не шумим пользователю — плагин не должен мешать
+        // Lampa.Noty.show('RT/OMDb: ' + err);
+      });
+    });
+  }
+
+  // ====== Запуск ======
+  function start() {
+    if (window.rt_omdb_plugin_started) return;
+    window.rt_omdb_plugin_started = true;
+
+    // Регистрация настроек
+    registerSettingsEntry();
+    // Сразу применим скрытие TMDB, если включено
+    applyHideTmdbIn(document.body);
+    // Хук карточек
+    hookFullCards();
+  }
+
+  start();
 })();
