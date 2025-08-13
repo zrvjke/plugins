@@ -41,27 +41,48 @@
     Lampa.Listener.follow('app', function (e) {
         if (e.type === 'ready') {
             console.log('App ready, initializing Rotten Tomatoes plugin at:', new Date().toISOString());
-            Lampa.Listener.follow('open', function (e) {
-                if (e.name === 'settings') {
-                    console.log('Settings menu opened, searching for container');
-                    var settingsContainer = $('.settings, .settings-body, #settings, .main-settings'); // Попытка найти контейнер
-                    if (settingsContainer.length) {
-                        console.log('Settings container found, class:', settingsContainer.attr('class'));
-                        var existingSection = settingsContainer.find('.rotten-tomatoes-settings');
-                        if (!existingSection.length) {
-                            var newSection = createSettingsComponent();
-                            settingsContainer.append(newSection);
-                            console.log('Rotten Tomatoes section added successfully');
+            setTimeout(function () {
+                Lampa.Listener.follow('open', function (e) {
+                    if (e.name === 'settings') {
+                        console.log('Settings menu opened, searching for container');
+                        var settingsContainer = $('.settings'); // Основной контейнер, как в interface_mod.js
+                        if (settingsContainer.length) {
+                            console.log('Settings container found, class:', settingsContainer.attr('class'));
+                            var existingSection = settingsContainer.find('.rotten-tomatoes-settings');
+                            if (!existingSection.length) {
+                                var newSection = createSettingsComponent();
+                                settingsContainer.append(newSection); // Вставка в конец контейнера
+                                console.log('Rotten Tomatoes section added successfully');
+                            } else {
+                                console.log('Rotten Tomatoes section already exists');
+                            }
                         } else {
-                            console.log('Rotten Tomatoes section already exists, skipping');
+                            console.log('Settings container not found. Available elements in body:', $('body').find('*').map(function() { return this.className; }).get().join(', '));
+                            // Альтернатива: модальное окно, как в interface_mod.js
+                            showSettingsModal();
                         }
-                    } else {
-                        console.log('Settings container not found. Available elements:', $('body').find('*').map(function() { return this.className; }).get().join(', '));
                     }
-                }
-            });
+                });
+            }, 1000); // Задержка для загрузки DOM
         }
     });
+
+    // Функция для отображения модального окна настроек (альтернатива)
+    function showSettingsModal() {
+        var html = $('<div></div>');
+        var content = createSettingsComponent();
+        html.append(content);
+
+        Lampa.Select.show({
+            title: 'Rotten Tomatoes Settings',
+            html: html,
+            onBack: function () {
+                $('.selectbox').remove();
+                Lampa.Controller.toggle('settings');
+            }
+        });
+        console.log('Settings shown in modal window');
+    }
 
     // Функция для применения стилей отключения TMDB
     function applyStyles() {
