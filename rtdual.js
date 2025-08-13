@@ -37,7 +37,7 @@
                 change: function (value) {
                     RottenTomatoes.settings.disable_tmdb = value;
                     Lampa.Storage.set('rotten_tomatoes_disable_tmdb', value);
-                    applyStyles(); // Применяем стили сразу
+                    applyStyles();
                 }
             });
             element.append(disableToggle.render());
@@ -86,16 +86,11 @@
         }
 
         var cache_key = 'rt_' + (imdb_id || encodeURIComponent(title) + '_' + year);
-        var cache = Lampa.Storage.cache('rt_rating', 500, {}); // 500 - лимит ключей
+        var cache = Lampa.Storage.cache('rt_rating', 500, {});
         var timestamp = new Date().getTime();
 
-        if (cache[cache_key]) {
-            if ((timestamp - cache[cache_key].timestamp) < 86400000) { // 1 день
-                return callback(cache[cache_key].data);
-            } else {
-                delete cache[cache_key];
-                Lampa.Storage.set('rt_rating', cache);
-            }
+        if (cache[cache_key] && (timestamp - cache[cache_key].timestamp) < 86400000) {
+            return callback(cache[cache_key].data);
         }
 
         var network = new Lampa.Reguest();
@@ -172,14 +167,14 @@
 
     if (!window.rotten_tomatoes_plugin) startPlugin();
 
-    // Регистрация в манифесте
-    Lampa.Manifest.plugins = Lampa.Utils.assign(Lampa.Manifest.plugins || {}, {
-        'rotten_tomatoes': {
+    // Регистрация в манифесте (без использования assign)
+    if (Lampa.Manifest && Lampa.Manifest.plugins) {
+        Lampa.Manifest.plugins['rotten_tomatoes'] = {
             name: 'Rotten Tomatoes',
             version: RottenTomatoes.version,
             description: 'Добавляет рейтинги Rotten Tomatoes в карточки'
-        }
-    });
+        };
+    }
 
     // Экспорт объекта
     window.rotten_tomatoes = RottenTomatoes;
