@@ -312,7 +312,9 @@
                 // Prevent duplicates
                 if ($('.rate--rt-critics', renderRoot).length) return;
 
-                var infoRate = $('.info__rate', renderRoot);
+                // Use jQuery’s find on renderRoot to reliably locate the
+                // rating container regardless of the type of renderRoot.
+                var infoRate = $(renderRoot).find('.info__rate');
                 if (!infoRate.length) return;
 
                 if (hideTmdb) {
@@ -350,9 +352,14 @@
             insertRtElements();
 
             // Observe mutations on the rating container and reinsert if needed
-            var infoRateEl = renderRoot.querySelector('.info__rate');
+            // Select the rating container for observation.  Since
+            // renderRoot may not be a plain DOM element but instead an object
+            // returned by Lampa’s renderer, we use jQuery to find the
+            // element and then take the first node.  Without this, calling
+            // querySelector on renderRoot may throw an error.
+            var infoRateEl = $('.info__rate', renderRoot).get(0);
             if (!infoRateEl) return;
-            var observer = new MutationObserver(function (mutations) {
+            var observer = new MutationObserver(function () {
                 insertRtElements();
             });
             observer.observe(infoRateEl, { childList: true, subtree: false });
