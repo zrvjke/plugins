@@ -90,30 +90,84 @@
      * provided here; additional languages can be added following the same
      * structure.
      */
-    // Register translation keys following Lampa’s naming convention.  The
-    // prefix “settings_” ensures keys appear correctly in the settings UI.
+    // Register translation keys.  Each key has language sub‑objects rather than
+    // grouping by language.  This mirrors the pattern used in other Lampa
+    // plugins such as MDBList, ensuring translations are resolved correctly.
     Lampa.Lang.add({
-        en: {
-            // Name of the plugin folder in settings
-            'settings_rt_plugin_name': 'Rating Rotten tomatoes',
-            // Label and description for the API key input
-            'settings_rt_api_key_name': 'OMDb API Key',
-            'settings_rt_api_key_desc': 'Enter your API key from OMDb (Rotten Tomatoes).',
-            // Label and description for hiding the TMDb rating
-            'settings_rt_disable_tmdb_label': 'Hide TMDb rating',
-            'settings_rt_disable_tmdb_descr': 'Remove the built‑in TMDb score from cards.',
-            // Labels for the Rotten Tomatoes scores shown in cards
-            'settings_rt_label_critics': 'RT critics',
-            'settings_rt_label_audience': 'RT audience'
+        // Name of the plugin in the settings menu
+        settings_rt_plugin_name: {
+            en: 'Rating Rotten Tomatoes',
+            ru: 'Рейтинг Rotten Tomatoes'
         },
-        ru: {
-            'settings_rt_plugin_name': 'Рейтинг Rotten Tomatoes',
-            'settings_rt_api_key_name': 'Ключ OMDb API',
-            'settings_rt_api_key_desc': 'Введите ваш API‑ключ OMDb (Rotten Tomatoes).',
-            'settings_rt_disable_tmdb_label': 'Скрыть рейтинг TMDb',
-            'settings_rt_disable_tmdb_descr': 'Убирает встроенный рейтинг TMDb из карточек.',
-            'settings_rt_label_critics': 'RT критики',
-            'settings_rt_label_audience': 'RT зрители'
+        // API key field label and description
+        settings_rt_api_key_name: {
+            en: 'Enter OMDb API Key',
+            ru: 'Введите API ключ OMDb'
+        },
+        settings_rt_api_key_desc: {
+            en: 'Provide your OMDb API key (Rotten Tomatoes).',
+            ru: 'Укажите ваш API ключ OMDb (Rotten Tomatoes).'
+        },
+        // TMDb toggle field label and description
+        settings_rt_disable_tmdb_label: {
+            en: 'Hide TMDb rating',
+            ru: 'Выключить рейтинг TMDb'
+        },
+        settings_rt_disable_tmdb_descr: {
+            en: 'Remove the built‑in TMDb rating from cards.',
+            ru: 'Удаляет встроенную оценку TMDb из карточек.'
+        },
+        // Labels for critic and audience ratings in the card
+        settings_rt_label_critics: {
+            en: 'Critics',
+            ru: 'Критики'
+        },
+        settings_rt_label_audience: {
+            en: 'Audience',
+            ru: 'Зрители'
+        },
+        // Notification when the API key is saved successfully
+        settings_rt_api_key_saved: {
+            en: 'API key saved successfully',
+            ru: 'API ключ успешно сохранён'
+        },
+
+        // Fallback keys for older Lampa versions that expect single
+        // "setting_" prefixes instead of "settings_".  They map to the
+        // same translations as the primary keys above.  Including these
+        // ensures the UI remains user‑friendly even if the plugin name
+        // references differ.
+        setting_rt_plugin_name: {
+            en: 'Rating Rotten Tomatoes',
+            ru: 'Рейтинг Rotten Tomatoes'
+        },
+        setting_rt_api_key_label: {
+            en: 'Enter OMDb API Key',
+            ru: 'Введите API ключ OMDb'
+        },
+        setting_rt_api_key_descr: {
+            en: 'Provide your OMDb API key (Rotten Tomatoes).',
+            ru: 'Укажите ваш API ключ OMDb (Rotten Tomatoes).'
+        },
+        setting_rt_disable_tmdb_label: {
+            en: 'Hide TMDb rating',
+            ru: 'Выключить рейтинг TMDb'
+        },
+        setting_rt_disable_tmdb_descr: {
+            en: 'Remove the built‑in TMDb rating from cards.',
+            ru: 'Удаляет встроенную оценку TMDb из карточек.'
+        },
+        setting_rt_label_critics: {
+            en: 'Critics',
+            ru: 'Критики'
+        },
+        setting_rt_label_audience: {
+            en: 'Audience',
+            ru: 'Зрители'
+        },
+        setting_rt_api_key_saved: {
+            en: 'API key saved successfully',
+            ru: 'API ключ успешно сохранён'
         }
     });
 
@@ -192,6 +246,16 @@
                 // Lampa.Storage.get() if the argument is undefined.
                 var newKey = (typeof value !== 'undefined') ? value : Lampa.Storage.get(STORAGE_KEY, '');
                 setApiKey(newKey);
+
+                // Show a notification indicating that the key was saved.  This
+                // uses Lampa's built‑in toast system.  Translate the
+                // message to the current language.
+                try {
+                    var msg = Lampa.Lang.translate('settings_rt_api_key_saved');
+                    Lampa.Noty.show(msg);
+                } catch (e) {
+                    // Noty might not be available in very old versions of Lampa.
+                }
             }
         });
 
