@@ -57,24 +57,30 @@
      * provided here; additional languages can be added following the same
      * structure.
      */
+    // Register translation keys following Lampa’s naming convention.  The
+    // prefix “settings_” ensures keys appear correctly in the settings UI.
     Lampa.Lang.add({
         en: {
-            'rt_plugin_name': 'Rotten Tomatoes (OMDb)',
-            'rt_plugin_descr': 'Adds critics and audience scores from Rotten Tomatoes and optionally hides the TMDb rating.',
-            'rt_api_key_label': 'API key for OMDb',
-            'rt_api_key_descr': 'Enter a valid OMDb API key to fetch Rotten Tomatoes scores. Without a key the plugin will display “--”.',
-            'rt_enter_api_prompt': 'Enter your OMDb API key:',
-            'rt_disable_tmdb_label': 'Hide TMDb rating',
-            'rt_disable_tmdb_descr': 'Remove the built‑in TMDb score from cards.'
+            // Name of the plugin folder in settings
+            'settings_rt_plugin_name': 'Rating Rotten tomatoes',
+            // Label and description for the API key input
+            'settings_rt_api_key_name': 'OMDb API Key',
+            'settings_rt_api_key_desc': 'Enter your API key from OMDb (Rotten Tomatoes).',
+            // Label and description for hiding the TMDb rating
+            'settings_rt_disable_tmdb_label': 'Hide TMDb rating',
+            'settings_rt_disable_tmdb_descr': 'Remove the built‑in TMDb score from cards.',
+            // Labels for the Rotten Tomatoes scores shown in cards
+            'settings_rt_label_critics': 'RT critics',
+            'settings_rt_label_audience': 'RT audience'
         },
         ru: {
-            'rt_plugin_name': 'Rotten Tomatoes (OMDb)',
-            'rt_plugin_descr': 'Добавляет оценки критиков и зрителей Rotten Tomatoes и позволяет скрывать рейтинг TMDb.',
-            'rt_api_key_label': 'API‑ключ OMDb',
-            'rt_api_key_descr': 'Введите действительный API‑ключ OMDb для загрузки оценок Rotten Tomatoes. Без ключа плагин будет отображать «--».',
-            'rt_enter_api_prompt': 'Введите ваш API‑ключ OMDb:',
-            'rt_disable_tmdb_label': 'Скрыть рейтинг TMDb',
-            'rt_disable_tmdb_descr': 'Убирает встроенный рейтинг TMDb из карточек.'
+            'settings_rt_plugin_name': 'Рейтинг Rotten Tomatoes',
+            'settings_rt_api_key_name': 'Ключ OMDb API',
+            'settings_rt_api_key_desc': 'Введите ваш API‑ключ OMDb (Rotten Tomatoes).',
+            'settings_rt_disable_tmdb_label': 'Скрыть рейтинг TMDb',
+            'settings_rt_disable_tmdb_descr': 'Убирает встроенный рейтинг TMDb из карточек.',
+            'settings_rt_label_critics': 'RT критики',
+            'settings_rt_label_audience': 'RT зрители'
         }
     });
 
@@ -124,46 +130,50 @@
         // unique within all installed plugins.
         Lampa.SettingsApi.addComponent({
             component: 'rotten_tomatoes',
-            name: Lampa.Lang.translate('rt_plugin_name'),
+            name: Lampa.Lang.translate('settings_rt_plugin_name'),
             icon: svgIcon
         });
 
-        // Button parameter to prompt for the API key.  We deliberately use
-        // type:'button' because Lampa’s API does not currently support text
-        // inputs.  A modal prompt is used to ask the user for their key.
+        // Input field for the OMDb API key. Lampa’s Settings API supports
+        // type:'input' which renders a text box. We bind the storage key to
+        // `STORAGE_KEY` so that the value persists automatically. The
+        // default and placeholder are populated from the current value.
         Lampa.SettingsApi.addParam({
             component: 'rotten_tomatoes',
             param: {
-                name: 'rt_api_button',
-                type: 'button',
-                component: 'rt_api_button'
+                name: STORAGE_KEY,
+                type: 'input',
+                default: apiKey,
+                values: {},
+                placeholder: Lampa.Lang.translate('settings_rt_api_key_desc')
             },
             field: {
-                name: Lampa.Lang.translate('rt_api_key_label'),
-                description: Lampa.Lang.translate('rt_api_key_descr')
+                name: Lampa.Lang.translate('settings_rt_api_key_name'),
+                description: Lampa.Lang.translate('settings_rt_api_key_desc')
             },
-            onChange: function () {
-                // Use the native prompt; this works both in the web and desktop
-                // versions of Lampa.  Prepopulate with the existing key.  If
-                // the user cancels, no changes are made.
-                var result = prompt(Lampa.Lang.translate('rt_enter_api_prompt'), apiKey || '');
-                if (result !== null) setApiKey(result.trim());
+            onChange: function (value) {
+                // When the user changes the API key, update our cached value
+                // and persist it to storage.  Some versions of Lampa pass
+                // the new value as the first argument to onChange; others
+                // simply update Lampa.Storage directly.  Fallback to
+                // Lampa.Storage.get() if the argument is undefined.
+                var newKey = (typeof value !== 'undefined') ? value : Lampa.Storage.get(STORAGE_KEY, '');
+                setApiKey(newKey);
             }
         });
 
-        // Toggle parameter to hide the TMDb rating.  When switched the
-        // preference is persisted; the actual hiding logic runs in the
-        // `onCardRender` handler below.
+        // Toggle parameter to hide the TMDb rating.  Use type:'trigger' for
+        // a boolean switch.  The default value is taken from storage.
         Lampa.SettingsApi.addParam({
             component: 'rotten_tomatoes',
             param: {
-                name: 'rt_hide_tmdb',
+                name: STORAGE_DISABLE,
                 type: 'trigger',
                 default: hideTmdb
             },
             field: {
-                name: Lampa.Lang.translate('rt_disable_tmdb_label'),
-                description: Lampa.Lang.translate('rt_disable_tmdb_descr')
+                name: Lampa.Lang.translate('settings_rt_disable_tmdb_label'),
+                description: Lampa.Lang.translate('settings_rt_disable_tmdb_descr')
             },
             onChange: function (value) {
                 setHideTmdb(value);
@@ -212,16 +222,18 @@
         var infoRate = $('.info__rate', renderRoot);
         if (!infoRate.length) return;
 
-        // Append critic and audience placeholders.  We use spans with
-        // distinctive classes to facilitate later updates.  The icons are
-        // inline images sized to match existing Lampa ratings.
-        var criticsHTML = '<span class="rate rate--rt-critics"><span>' +
-            '<img src="' + TOMATO_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">--' +
-            '</span></span>';
-        var audienceHTML = '<span class="rate rate--rt-audience"><span>' +
-            '<img src="' + POPCORN_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">--' +
-            '</span></span>';
-        infoRate.append(criticsHTML + audienceHTML);
+        // Append critic and audience placeholders.  Each rating consists of
+        // two divs: the first holds the value and icon, the second the
+        // label.  Translation keys are used for the labels to support
+        // multiple languages.
+        var criticsSpan = $('<span class="rate rate--rt-critics"></span>');
+        criticsSpan.append('<div class="rt-critics-value"><img src="' + TOMATO_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">--</div>');
+        criticsSpan.append('<div>' + Lampa.Lang.translate('settings_rt_label_critics') + '</div>');
+        var audienceSpan = $('<span class="rate rate--rt-audience"></span>');
+        audienceSpan.append('<div class="rt-audience-value"><img src="' + POPCORN_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">--</div>');
+        audienceSpan.append('<div>' + Lampa.Lang.translate('settings_rt_label_audience') + '</div>');
+        infoRate.append(criticsSpan);
+        infoRate.append(audienceSpan);
 
         // If no API key is set then do not attempt to fetch ratings.  The
         // placeholders will remain as “--”.
@@ -327,14 +339,15 @@
         var criticsText = ratings && ratings.critics ? ratings.critics + '%' : '--';
         var audienceText = ratings && ratings.audience ? ratings.audience + '%' : '--';
 
-        // Update critics rating
-        $('.rate--rt-critics span', renderRoot).each(function () {
+        // Update critics rating.  Only replace the contents of the first div
+        // (rt-critics-value) so the label remains intact.
+        $('.rate--rt-critics .rt-critics-value', renderRoot).each(function () {
             $(this).html('<img src="' + TOMATO_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">' +
                 criticsText);
         });
 
-        // Update audience rating
-        $('.rate--rt-audience span', renderRoot).each(function () {
+        // Update audience rating.  Only replace the value portion.
+        $('.rate--rt-audience .rt-audience-value', renderRoot).each(function () {
             $(this).html('<img src="' + POPCORN_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">' +
                 audienceText);
         });
