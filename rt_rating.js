@@ -90,24 +90,37 @@
             if (!mdblistKey) return resolve({});
             var request = new Lampa.Reguest();
             var url;
-            if (imdbId) {
+            var useTmdbEndpoint = false;
+            if (tmdbId) {
+                // use /tmdb/ endpoint for better coverage
+                var typePath = media && media.toLowerCase().startsWith('tv') ? 'show' : 'movie';
+                url = 'https://api.mdblist.com/tmdb/' + typePath + '/' + encodeURIComponent(tmdbId) + '?apikey=' + encodeURIComponent(mdblistKey);
+                useTmdbEndpoint = true;
+            } else if (imdbId) {
                 url = 'https://api.mdblist.com/?i=' + encodeURIComponent(imdbId) + '&apikey=' + encodeURIComponent(mdblistKey);
-            } else if (tmdbId) {
-                // media: movie or show; mdblist expects 'm' parameter for media type
-                var typeParam = media && media.toLowerCase().startsWith('tv') ? 'show' : 'movie';
-                url = 'https://api.mdblist.com/?tm=' + encodeURIComponent(tmdbId) + '&m=' + encodeURIComponent(typeParam) + '&apikey=' + encodeURIComponent(mdblistKey);
             } else {
                 return resolve({});
             }
             request.timeout(15000);
             request.silent(url, function (json) {
                 var crit, aud;
-                if (json && typeof json.tomatoes === 'number') {
-                    crit = json.tomatoes;
-                }
-                if (json && (typeof json.popcorn === 'number' || typeof json.popcorn === 'string')) {
-                    var p = parseFloat(json.popcorn);
-                    if (!isNaN(p)) aud = p;
+                if (useTmdbEndpoint && json && Array.isArray(json.ratings)) {
+                    // In /tmdb/ endpoint, ratings are in array of objects {source,value}
+                    json.ratings.forEach(function (rating) {
+                        if (rating.source === 'tomatoes' && typeof rating.value === 'number') {
+                            crit = rating.value;
+                        } else if (rating.source === 'popcorn' && rating.value != null) {
+                            var parsed = parseFloat(rating.value);
+                            if (!isNaN(parsed)) aud = parsed;
+                        }
+                    });
+                } else {
+                    // fallback for legacy endpoint
+                    if (json && typeof json.tomatoes === 'number') crit = json.tomatoes;
+                    if (json && (typeof json.popcorn === 'number' || typeof json.popcorn === 'string')) {
+                        var p = parseFloat(json.popcorn);
+                        if (!isNaN(p)) aud = p;
+                    }
                 }
                 resolve({ critics: crit, audience: aud });
             }, function () {
