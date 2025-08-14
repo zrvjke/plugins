@@ -125,8 +125,7 @@
         Lampa.SettingsApi.addComponent({
             component: 'rotten_tomatoes',
             name: Lampa.Lang.translate('rt_plugin_name'),
-            icon: svgIcon,
-            description: Lampa.Lang.translate('rt_plugin_descr')
+            icon: svgIcon
         });
 
         // Button parameter to prompt for the API key.  We deliberately use
@@ -134,10 +133,16 @@
         // inputs.  A modal prompt is used to ask the user for their key.
         Lampa.SettingsApi.addParam({
             component: 'rotten_tomatoes',
-            type: 'button',
-            name: Lampa.Lang.translate('rt_api_key_label'),
-            description: Lampa.Lang.translate('rt_api_key_descr'),
-            onClick: function () {
+            param: {
+                name: 'rt_api_button',
+                type: 'button',
+                component: 'rt_api_button'
+            },
+            field: {
+                name: Lampa.Lang.translate('rt_api_key_label'),
+                description: Lampa.Lang.translate('rt_api_key_descr')
+            },
+            onChange: function () {
                 // Use the native prompt; this works both in the web and desktop
                 // versions of Lampa.  Prepopulate with the existing key.  If
                 // the user cancels, no changes are made.
@@ -151,10 +156,15 @@
         // `onCardRender` handler below.
         Lampa.SettingsApi.addParam({
             component: 'rotten_tomatoes',
-            type: 'trigger',
-            name: Lampa.Lang.translate('rt_disable_tmdb_label'),
-            description: Lampa.Lang.translate('rt_disable_tmdb_descr'),
-            default: hideTmdb,
+            param: {
+                name: 'rt_hide_tmdb',
+                type: 'trigger',
+                default: hideTmdb
+            },
+            field: {
+                name: Lampa.Lang.translate('rt_disable_tmdb_label'),
+                description: Lampa.Lang.translate('rt_disable_tmdb_descr')
+            },
             onChange: function (value) {
                 setHideTmdb(value);
             }
