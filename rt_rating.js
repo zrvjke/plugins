@@ -52,7 +52,8 @@
         style.textContent = [
             '.rt-mdb-block{display:flex;align-items:center;gap:0.6em;margin-top:0.5em;flex-wrap:wrap;}',
             '.rt-mdb-item{display:flex;align-items:center;font-size:0.95em;background:rgba(0,0,0,0.4);padding:0.2em 0.5em;border-radius:0.3em;color:#fff;}',
-            '.rt-mdb-item.rt-rotten{background:rgba(0,100,0,0.4);}',
+            /* Блок для отрицательного рейтинга (используется одинаковый фон) */
+            '.rt-mdb-item.rt-rotten{background:rgba(0,0,0,0.4);}',
             '.rt-mdb-item img{width:16px;height:16px;margin-left:0.3em;}',
             '@media (max-width:600px){',
             '  .rt-mdb-item{font-size:0.85em;}',
@@ -71,11 +72,13 @@
      * для негативной добавляется класс rt-rotten.
      */
     function buildItem(value, freshIcon, rottenIcon) {
+        // Значение (процент) или тире, если undefined
         var val = (typeof value === 'number') ? value + '%' : '--';
+        // Выбираем иконку в зависимости от положительной оценки
         var isPositive = (typeof value === 'number') && value >= 60;
         var icon = isPositive ? freshIcon : rottenIcon;
-        var cls = (!isPositive && typeof value === 'number') ? ' rt-rotten' : '';
-        return '<span class="rt-mdb-item' + cls + '">' + val + '<img src="' + icon + '" alt="" draggable="false"></span>';
+        // Отрицательный рейтинг больше не окрашиваем в зелёный: одинаковый фон для всех
+        return '<span class="rt-mdb-item">' + val + '<img src="' + icon + '" alt="" draggable="false"></span>';
     }
 
     /**
