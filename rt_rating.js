@@ -85,11 +85,20 @@
      * Делает запрос к MDBList по IMDb ID. Возвращает объект с
      * {critics, audience}, или пустой объект если данных нет или нет ключа.
      */
-    function fetchMdb(imdbId) {
+    function fetchMdb(imdbId, tmdbId, media) {
         return new Promise(function (resolve) {
-            if (!mdblistKey || !imdbId) return resolve({});
+            if (!mdblistKey) return resolve({});
             var request = new Lampa.Reguest();
-            var url = 'https://api.mdblist.com/?i=' + encodeURIComponent(imdbId) + '&apikey=' + encodeURIComponent(mdblistKey);
+            var url;
+            if (imdbId) {
+                url = 'https://api.mdblist.com/?i=' + encodeURIComponent(imdbId) + '&apikey=' + encodeURIComponent(mdblistKey);
+            } else if (tmdbId) {
+                // media: movie or show; mdblist expects 'm' parameter for media type
+                var typeParam = media && media.toLowerCase().startsWith('tv') ? 'show' : 'movie';
+                url = 'https://api.mdblist.com/?tm=' + encodeURIComponent(tmdbId) + '&m=' + encodeURIComponent(typeParam) + '&apikey=' + encodeURIComponent(mdblistKey);
+            } else {
+                return resolve({});
+            }
             request.timeout(15000);
             request.silent(url, function (json) {
                 var crit, aud;
@@ -111,7 +120,7 @@
      * Парсит ответ OMDb в формате Rotten Tomatoes (резервный канал).
      */
     function parseOmdb(json) {
-        var critics, audience, imdbId;
+        var critics, audience;
         if (json && json.Response !== 'False') {
             if (json.tomatoMeter && json.tomatoMeter !== 'N/A') {
                 var c = parseInt(json.tomatoMeter, 10);
@@ -134,8 +143,7 @@
                 if (!isNaN(num)) audience = num <= 10 ? Math.round(num * 10) : Math.round(num);
             }
         }
-        if (json && json.imdbID) imdbId = json.imdbID;
-        return { critics: critics, audience: audience, imdbId: imdbId };
+        return { critics: critics, audience: audience };
     }
 
     /**
@@ -219,7 +227,9 @@
             var year = yearMatch ? yearMatch[0] : '';
             var title = movie.original_title || movie.title || movie.original_name || movie.name;
             // Сначала пробуем MDBList
-            fetchMdb(imdbId).then(function (res) {
+            var tmdbId = movie.id || movie.tmdb_id || '';
+            var mediaType = movie.media_type || (movie.number_of_seasons || movie.episode_run_time ? 'tv' : 'movie');
+            fetchMdb(imdbId, tmdbId, mediaType).then(function (res) {
                 if (res && (typeof res.critics === 'number' || typeof res.audience === 'number')) {
                     return resolve(res);
                 }
@@ -233,19 +243,7 @@
                         if (res2 && (typeof res2.critics === 'number' || typeof res2.audience === 'number')) {
                             return resolve(res2);
                         }
-                        fetchOmdbByTitle(title, year).then(function(resByTitle){
-                        if (resByTitle && resByTitle.imdbId && mdblistKey) {
-                            fetchMdb(resByTitle.imdbId).then(function(mdbAgain){
-                                if (mdbAgain && (typeof mdbAgain.critics === 'number' || typeof mdbAgain.audience === 'number')) {
-                                    resolve(mdbAgain);
-                                } else {
-                                    resolve(resByTitle);
-                                }
-                            });
-                        } else {
-                            resolve(resByTitle);
-                        }
-                    });
+                        fetchOmdbByTitle(title, year).then(resolve);
                     });
                 });
             });
