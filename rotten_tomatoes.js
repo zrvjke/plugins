@@ -295,75 +295,67 @@
         // rendered.  The event object also carries the card’s movie data.
         if (event.type !== 'complite') return;
 
-        // Defer injection slightly to ensure the DOM is fully ready.  Some
-        // internal operations may still be updating the card when the `full`
-        // event fires.  A minimal delay avoids our modifications being
-        // overwritten.
+        // Set up injection and observation.  Defer to ensure the DOM is ready.
         setTimeout(function () {
             var renderRoot = event.object.activity.render();
             var data = event.data || {};
             var movie = data.movie || data.item || data.card || {};
 
-            // Avoid injecting multiple times.  If our elements already exist
-            // nothing else is done.  We identify our spans using the unique
-            // classes defined below.
-            if ($('.rate--rt-critics', renderRoot).length) return;
+            /**
+             * Insert Rotten Tomatoes placeholders and optionally hide the
+             * TMDb rating.  If the placeholders already exist this
+             * function returns immediately.  Otherwise it appends the
+             * critic and audience spans to the info__rate container and
+             * initiates a rating fetch if an API key is available.
+             */
+            function insertRtElements() {
+                // Prevent duplicates
+                if ($('.rate--rt-critics', renderRoot).length) return;
 
-            // Obtain the container for ratings.  If the card does not include an
-            // `info__rate` element, we cannot safely insert our elements.
-            var infoRate = $('.info__rate', renderRoot);
-            if (!infoRate.length) return;
+                var infoRate = $('.info__rate', renderRoot);
+                if (!infoRate.length) return;
 
-            // Hide the built‑in TMDb rating when the corresponding setting is
-            // enabled.  The default rating is usually the first `.rate` inside
-            // `.info__rate`.  We hide only that element and leave other ratings
-            // (IMDb, Kinopoisk, etc.) intact.  Should future updates change the
-            // markup this heuristic may need adjustment.
-            if (hideTmdb) {
-                var defaultRate = infoRate.find('.rate').first();
-                defaultRate.addClass('hide');
+                if (hideTmdb) {
+                    var defaultRate = infoRate.find('.rate').first();
+                    defaultRate.addClass('hide');
+                }
+
+                var criticsSpan = $('<span class="rate rate--rt-critics"></span>');
+                criticsSpan.append('<div class="rt-critics-value"><img src="' + TOMATO_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">--</div>');
+                criticsSpan.append('<div>' + Lampa.Lang.translate('settings_rt_label_critics') + '</div>');
+                var audienceSpan = $('<span class="rate rate--rt-audience"></span>');
+                audienceSpan.append('<div class="rt-audience-value"><img src="' + POPCORN_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">--</div>');
+                audienceSpan.append('<div>' + Lampa.Lang.translate('settings_rt_label_audience') + '</div>');
+                infoRate.append(criticsSpan);
+                infoRate.append(audienceSpan);
+
+                // If no API key, leave placeholders
+                if (!apiKey) return;
+
+                // Extract title and year for OMDb
+                var title = movie.original_title || movie.title || movie.original_name || movie.name;
+                var date = movie.release_date || movie.first_air_date || movie.last_air_date || movie.year || '';
+                var year = '';
+                if (date) {
+                    var match = (date + '').match(/\d{4}/);
+                    if (match) year = match[0];
+                }
+                if (!title) return;
+                fetchRtRatings(title, year, apiKey).then(function (ratings) {
+                    updateRatings(renderRoot, ratings);
+                }).catch(function () {});
             }
 
-            // Append critic and audience placeholders.  Each rating consists of
-            // two divs: the first holds the value and icon, the second the
-            // label.  Translation keys are used for the labels to support
-            // multiple languages.  Always include icons so that their
-            // placeholders are visible even without an API key.
-            var criticsSpan = $('<span class="rate rate--rt-critics"></span>');
-            criticsSpan.append('<div class="rt-critics-value"><img src="' + TOMATO_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">--</div>');
-            criticsSpan.append('<div>' + Lampa.Lang.translate('settings_rt_label_critics') + '</div>');
-            var audienceSpan = $('<span class="rate rate--rt-audience"></span>');
-            audienceSpan.append('<div class="rt-audience-value"><img src="' + POPCORN_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">--</div>');
-            audienceSpan.append('<div>' + Lampa.Lang.translate('settings_rt_label_audience') + '</div>');
-            infoRate.append(criticsSpan);
-            infoRate.append(audienceSpan);
+            // Perform initial insertion
+            insertRtElements();
 
-            // If no API key is set then do not attempt to fetch ratings.  The
-            // placeholders will remain as “--” and the icons will still show.
-            if (!apiKey) return;
-
-            // Extract title and year for the OMDb query.  The plugin tries a
-            // hierarchy of properties to accommodate both movies and series.
-            var title = movie.original_title || movie.title || movie.original_name || movie.name;
-            var date = movie.release_date || movie.first_air_date || movie.last_air_date || movie.year || '';
-            var year = '';
-            if (date) {
-                // Some dates include ranges (e.g. “2014–” for series); take
-                // the first four digits.
-                var match = (date + '').match(/\d{4}/);
-                if (match) year = match[0];
-            }
-
-            // Guard against empty titles (e.g. unknown items).  Without a title
-            // OMDb cannot find the film, so we skip the request.
-            if (!title) return;
-
-            fetchRtRatings(title, year, apiKey).then(function (ratings) {
-                updateRatings(renderRoot, ratings);
-            }).catch(function () {
-                // Silently ignore network errors.  Users can check the console
-                // for more details if necessary.
+            // Observe mutations on the rating container and reinsert if needed
+            var infoRateEl = renderRoot.querySelector('.info__rate');
+            if (!infoRateEl) return;
+            var observer = new MutationObserver(function (mutations) {
+                insertRtElements();
             });
+            observer.observe(infoRateEl, { childList: true, subtree: false });
         }, 0);
     });
 
