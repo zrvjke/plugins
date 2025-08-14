@@ -17,9 +17,11 @@
 
     // Prevent the plugin from executing twice.  Some Lampa versions reload
     // plugins on theme switch; protecting against double initialization
-    // avoids duplicate ratings in the UI.
-    if (window.rotten_tomatoes_plugin_init) return;
-    window.rotten_tomatoes_plugin_init = true;
+    // avoids duplicate ratings in the UI.  Use a namespaced flag to minimise
+    // the chance of collisions with other scripts.
+    var flagName = '__rottenTomatoesPluginInjected__';
+    if (window[flagName]) return;
+    window[flagName] = true;
 
     /*
      * Base64 encoded icons for Rotten Tomatoes.  The tomato icon is used for
@@ -50,6 +52,37 @@
     // Load persisted values or fall back to defaults.
     var apiKey = Lampa.Storage.get(STORAGE_KEY, '');
     var hideTmdb = Lampa.Storage.get(STORAGE_DISABLE, false);
+
+    /**
+     * Attempt to parse query parameters from the script URL.  Users can
+     * optionally append `?apikey=<key>&hidetmdb=1` to the plugin URL when
+     * registering it in Lampa.  If present, these parameters override
+     * persisted values and are immediately saved to storage.  This is a
+     * convenience for environments where the settings UI is not yet
+     * available or to pre‑configure values for multiple devices.
+     */
+    try {
+        var currentScript = document.currentScript || (function () {
+            var scripts = document.getElementsByTagName('script');
+            return scripts[scripts.length - 1];
+        })();
+        if (currentScript && currentScript.src) {
+            var srcUrl = new URL(currentScript.src, window.location.href);
+            var params = srcUrl.searchParams;
+            var urlKey = params.get('apikey');
+            var urlHide = params.get('hidetmdb');
+            if (urlKey) {
+                apiKey = urlKey.trim();
+                Lampa.Storage.set(STORAGE_KEY, apiKey);
+            }
+            if (urlHide !== null) {
+                hideTmdb = (urlHide === '1' || urlHide.toLowerCase() === 'true');
+                Lampa.Storage.set(STORAGE_DISABLE, hideTmdb);
+            }
+        }
+    } catch (e) {
+        // Fail silently if URL parsing fails
+    }
 
     /*
      * Localized strings.  These keys mirror the plugin function names and
