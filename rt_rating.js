@@ -1,5 +1,5 @@
 /*
- * Rotten Tomatoes Ratings via MDBList for Lampa
+ * Rotten Tomatoes Ratings MDBList for Lampa
  *
  * Этот плагин добавляет в карточки фильмов/сериалов две оценки Rotten Tomatoes
  * (критики и зрители). В первую очередь он пытается получить данные
