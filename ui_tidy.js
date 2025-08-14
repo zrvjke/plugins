@@ -1,88 +1,90 @@
-(function () {
-  'use strict';
-  if (!window.Lampa) return;
-  if (window.genrePillsSafeInjected) return;
-  window.genrePillsSafeInjected = true;
+/*
+ * UI Simple CSS Plugin for Lampa
+ *
+ * Этот мини‑плагин изменяет интерфейс карточек фильмов/сериалов
+ * без вмешательства в DOM или событий. Он:
+ *   • скрывает блоки качества (4K, 1080p и т.п.);
+ *   • скрывает раздел комментариев, если он присутствует;
+ *   • добавляет полупрозрачный фон жанрам, отрисованным
+ *     в деталях карточки (список жанров, страна, год).  
+ *
+ * Плагин добавляет только CSS‑стили, поэтому он не вызывает
+ * зависаний и совместим практически с любой версией Lampa.
+ */
+(function(){
+    'use strict';
+    // Проверяем наличие Lampa
+    if (!window.Lampa) return;
+    // Предотвращаем повторную инициализацию
+    if (window.uiSimpleCssPluginLoaded) return;
+    window.uiSimpleCssPluginLoaded = true;
 
-  var STYLE_ID = 'genre-pills-safe-style';
-
-  // 1) Чистый CSS — полупрозрачная «пилюля», как в интерфейс-модах
-  if (!document.getElementById(STYLE_ID)) {
-    var css = document.createElement('style');
-    css.id = STYLE_ID;
-    css.textContent = [
-      '.genre-pill{display:inline-flex;align-items:center;background:rgba(0,0,0,.4);',
-      '  padding:.22em .55em;border-radius:.4em;line-height:1;font-size:1em;',
-      '  margin-right:.45em;margin-top:.25em;white-space:nowrap}',
-      '@media (max-width:600px){.genre-pill{font-size:.92em}}',
-      '@media (min-width:1200px){.genre-pill{font-size:1.08em}}'
-    ].join('');
-    document.head.appendChild(css);
-  }
-
-  // 2) Список жанров (RU/EN). Нужен, чтобы не красить всё подряд.
-  var GENRES = new Set([
-    'боевик','комедия','драма','триллер','ужасы','фантастика','фэнтези','криминал','приключения',
-    'мелодрама','семейный','анимация','мультфильм','военный','история','мюзикл','биография',
-    'документальный','спорт','вестерн','детектив','реалити','научный','ток-шоу',
-    'action','comedy','drama','thriller','horror','sci-fi','science fiction','fantasy','crime',
-    'adventure','family','animation','war','history','musical','biography','documentary',
-    'sport','western','mystery','reality','talk show'
-  ]);
-  function norm(s){ return (s||'').toLowerCase().replace(/\s+/g,' ').trim(); }
-
-  // 3) Находим «детали» карточки (где обычно лежат год/страна/жанры)
-  function findDetails(root){
-    var q = [
-      '.new-interface-info__details',
-      '.full-start-new__details',
-      '.full-start__details',
-      '.full-start-new__info',
-      '.full-start__info'
-    ];
-    for (var i=0;i<q.length;i++){
-      var el = root.querySelector(q[i]);
-      if (el) return el;
+    // Создаем элемент стилей
+    var style = document.createElement('style');
+    style.setAttribute('id', 'ui-simple-css-style');
+    style.textContent = `
+    /* Скрываем блоки «качество» и комментарии */
+    .full-start__quality, .full-start-new__quality, .badge-quality,
+    .full-start__comments, .full-start-new__comments,
+    .comments, .comments--container, #comments {
+        display: none !important;
     }
-    var ttl = root.querySelector('.full-start-new__title, .full-start__title');
-    return ttl ? ttl.parentElement : root;
-  }
 
-  // 4) Аккуратно помечаем жанры (НЕ перестраиваем DOM — только класс)
-  function paintGenres(details){
-    if (!details) return;
-    // жанры обычно как <a>, <span> или «теги»
-    var candidates = details.querySelectorAll('a, span, .tag, .badge');
-    candidates.forEach(function(el){
-      if (el.classList.contains('genre-pill')) return;
-      var txt = (el.textContent || '').trim();
-      if (!txt) return;
+    /* Делаем жанры полупрозрачными «пилюлями». В разных версиях
+       Lampa жанры могут быть <a> или <span> внутри блоков
+       подробной информации (info/details). Мы задаем общий
+       стиль, который добавляет фон, отступы и скругления. */
+    .full-start__info a, .full-start__info span,
+    .full-start__details a, .full-start__details span,
+    .full-start-new__info a, .full-start-new__info span,
+    .full-start-new__details a, .full-start-new__details span,
+    .new-interface-info__details a, .new-interface-info__details span {
+        background: rgba(0, 0, 0, 0.4);
+        padding: 0.22em 0.55em;
+        border-radius: 0.4em;
+        margin-right: 0.45em;
+        margin-top: 0.25em;
+        display: inline-block;
+        line-height: 1;
+    }
 
-      // если узел содержит список через запятую — красим поштучно
-      if (txt.includes(',') || txt.includes(' • ') || txt.includes(' · ')) {
-        // ничего не разбираем — просто не трогаем такие узлы, чтобы не ломать верстку
-        return;
-      }
+    /* Убираем пустые элементы, чтобы не было лишних отступов */
+    .full-start__info a:empty, .full-start__info span:empty,
+    .full-start__details a:empty, .full-start__details span:empty,
+    .full-start-new__info a:empty, .full-start-new__info span:empty,
+    .full-start-new__details a:empty, .full-start-new__details span:empty,
+    .new-interface-info__details a:empty, .new-interface-info__details span:empty {
+        display: none !important;
+    }
 
-      if (GENRES.has(norm(txt))) {
-        el.classList.add('genre-pill');
-      }
-    });
-  }
+    @media (max-width: 600px) {
+        /* На небольших экранах уменьшите размер шрифта и отступы */
+        .full-start__info a, .full-start__info span,
+        .full-start__details a, .full-start__details span,
+        .full-start-new__info a, .full-start-new__info span,
+        .full-start-new__details a, .full-start-new__details span,
+        .new-interface-info__details a, .new-interface-info__details span {
+            font-size: 0.92em;
+            padding: 0.18em 0.45em;
+            margin-top: 0.2em;
+        }
+    }
 
-  // 5) Один проход при открытии карточки
-  Lampa.Listener.follow('full', function(e){
-    if (e.type !== 'complite' || !e.object || !e.object.activity) return;
-    var rendered = e.object.activity.render();
-    var root = (rendered && typeof rendered === 'object' && rendered.nodeType === 1)
-      ? rendered
-      : (typeof rendered === 'string' ? document.querySelector(rendered) : document);
+    @media (min-width: 1200px) {
+        /* На больших экранах немного увеличиваем шрифт */
+        .full-start__info a, .full-start__info span,
+        .full-start__details a, .full-start__details span,
+        .full-start-new__info a, .full-start-new__info span,
+        .full-start-new__details a, .full-start-new__details span,
+        .new-interface-info__details a, .new-interface-info__details span {
+            font-size: 1.08em;
+        }
+    }
+    `;
 
-    var details = findDetails(root);
-    paintGenres(details);
-    // на всякий — второй проход через полсекунды (часто дорисовывается строка)
-    setTimeout(function(){ paintGenres(details); }, 500);
-  });
+    // Добавляем стили на страницу
+    document.head.appendChild(style);
 
-  console.log('[genre-pills-safe] loaded');
+    console.log('[ui-simple-css] loaded');
 })();
+
