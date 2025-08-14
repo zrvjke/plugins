@@ -1,72 +1,109 @@
 /*
- * Rotten Tomatoes Ratings Block for Lampa (Improved)
+ * Rotten Tomatoes Ratings via MDBList for Lampa
  *
- * Этот плагин добавляет отдельный блок с оценками Rotten Tomatoes
- * — от критиков и от зрителей — в секцию подробностей карточки фильма
- * или сериала. В отличие от предыдущей версии, здесь нет настроек
- * для ввода ключа: ключ OMDb жёстко прописан в коде. Изображения
- * заменены на смайлики, которые выглядят чётче при разных масштабах
- * окна приложения. Цвет фона изменяется в зависимости от того,
- * положительная оценка (≥60 %) или нет. Плагин также пытается
- * использовать IMDb ID, если он доступен в объекте фильма, чтобы
- * повысить точность получения данных.
+ * Этот плагин добавляет в карточки фильмов/сериалов две оценки Rotten Tomatoes
+ * (критики и зрители). В первую очередь он пытается получить данные
+ * через сервис MDBList (необходим API‑ключ), потому что покрытие там
+ * заметно лучше, чем в OMDb. При отсутствии ключа или данных
+ * происходит автоматический откат на OMDb.
+ *
+ * Вместо размытых изображений используются оригинальные SVG‑иконки
+ * из psahx/ps_plug. Они подгружаются напрямую и хорошо масштабируются.
+ * Для маленьких экранов применяются CSS‑медиазапросы, уменьшающие
+ * размер иконок и шрифта.
  */
 
 (function () {
     'use strict';
-    // Проверяем, что Lampa присутствует
     if (!window.Lampa) return;
-    // Не допускаем повторной инициализации
-    if (window.rtBlockPluginInjected) return;
-    window.rtBlockPluginInjected = true;
+    if (window.rtMdbPluginInjected) return;
+    window.rtMdbPluginInjected = true;
 
-    // Фиксированный ключ OMDb. Получить можно бесплатно на omdbapi.com
+    // --- Ключи API ---
+    // Ключ OMDb (фиксированный для резервного канала)
     var omdbKey = '61b9a558';
+    // Ключ MDBList. Чтобы плагин работал через MDBList, получите свой
+    // ключ на сайте mdblist.com и вставьте его сюда. Оставьте пустой,
+    // чтобы использовать только OMDb.
+    // API ключ для MDBList. Этот ключ используется для получения рейтингов
+    // Rotten Tomatoes через сервис mdblist.com. Вы можете заменить его
+    // на свой, если понадобится. Текущий ключ предоставлен пользователем.
+    var mdblistKey = 'hx4fegxixdzg8yj9v8xu2agyj';
 
-    // Смайлики для обозначения критиков и зрителей Rotten Tomatoes
-    var CRITIC_EMOJI = '🍅';
-    var AUDIENCE_EMOJI = '🍿';
+    // --- Ссылки на SVG‑иконки Rotten Tomatoes от psahx ---
+    var ICONS = {
+        criticsFresh: 'https://psahx.github.io/ps_plug/Rotten_Tomatoes.svg',
+        criticsRotten: 'https://psahx.github.io/ps_plug/Rotten_Tomatoes_rotten.svg',
+        audienceFresh: 'https://psahx.github.io/ps_plug/Rotten_Tomatoes_positive_audience.svg',
+        audienceRotten: 'https://psahx.github.io/ps_plug/Rotten_Tomatoes_negative_audience.svg'
+    };
 
-    // Вставляем CSS для нашего блока, если его ещё нет
-    if (!document.getElementById('rt-block-style')) {
+    // Вставляем стили для блока. Используем медиазапрос, чтобы менять
+    // размер текста и иконок на маленьких экранах.
+    if (!document.getElementById('rt-mdb-style')) {
         var style = document.createElement('style');
-        style.id = 'rt-block-style';
+        style.id = 'rt-mdb-style';
         style.textContent = [
-            '.rt-block{display:flex;align-items:center;gap:0.6em;margin-top:0.5em;flex-wrap:wrap;}',
-            '.rt-item{display:flex;align-items:center;font-size:0.95em;background:rgba(0,0,0,0.4);padding:0.2em 0.5em;border-radius:0.3em;color:#fff;}',
-            '.rt-item.rt-rotten{background:rgba(0,100,0,0.4);}',
-            '.rt-item .icon{margin-left:0.3em;font-size:1.1em;}'
+            '.rt-mdb-block{display:flex;align-items:center;gap:0.6em;margin-top:0.5em;flex-wrap:wrap;}',
+            '.rt-mdb-item{display:flex;align-items:center;font-size:0.95em;background:rgba(0,0,0,0.4);padding:0.2em 0.5em;border-radius:0.3em;color:#fff;}',
+            '.rt-mdb-item.rt-rotten{background:rgba(0,100,0,0.4);}',
+            '.rt-mdb-item img{width:16px;height:16px;margin-left:0.3em;}',
+            '@media (max-width:600px){',
+            '  .rt-mdb-item{font-size:0.85em;}',
+            '  .rt-mdb-item img{width:14px;height:14px;}',
+            '}',
+            '@media (min-width:1200px){',
+            '  .rt-mdb-item{font-size:1em;}',
+            '  .rt-mdb-item img{width:18px;height:18px;}',
+            '}'
         ].join('');
         document.head.appendChild(style);
     }
 
     /**
-     * Создаёт HTML для одной оценки. Если значение не определено, вместо
-     * числа выводится "--". Положительная оценка считается от 60 %.
-     * В зависимости от этого добавляется класс rt-rotten, который
-     * меняет фон, чтобы оттенить «гнилой» результат.
-     *
-     * @param {Number|undefined} value Реальное значение рейтинга
-     * @param {String} emoji Смайлик для данной оценки
-     * @returns {String} Готовый HTML фрагмент
+     * Формирует HTML элемента рейтинга. Положительная оценка – ≥60 %,
+     * для негативной добавляется класс rt-rotten.
      */
-    function buildItem(value, emoji) {
+    function buildItem(value, freshIcon, rottenIcon) {
         var val = (typeof value === 'number') ? value + '%' : '--';
         var isPositive = (typeof value === 'number') && value >= 60;
+        var icon = isPositive ? freshIcon : rottenIcon;
         var cls = (!isPositive && typeof value === 'number') ? ' rt-rotten' : '';
-        return '<span class="rt-item' + cls + '">' + val + '<span class="icon">' + emoji + '</span></span>';
+        return '<span class="rt-mdb-item' + cls + '">' + val + '<img src="' + icon + '" alt="" draggable="false"></span>';
     }
 
     /**
-     * Парсит ответ OMDb на наличие рейтингов Rotten Tomatoes. Возвращает
-     * объект вида { critics: Number|undefined, audience: Number|undefined }.
-     *
-     * @param {Object} json Ответ OMDb
+     * Делает запрос к MDBList по IMDb ID. Возвращает объект с
+     * {critics, audience}, или пустой объект если данных нет или нет ключа.
+     */
+    function fetchMdb(imdbId) {
+        return new Promise(function (resolve) {
+            if (!mdblistKey || !imdbId) return resolve({});
+            var request = new Lampa.Reguest();
+            var url = 'https://api.mdblist.com/?i=' + encodeURIComponent(imdbId) + '&apikey=' + encodeURIComponent(mdblistKey);
+            request.timeout(15000);
+            request.silent(url, function (json) {
+                var crit, aud;
+                if (json && typeof json.tomatoes === 'number') {
+                    crit = json.tomatoes;
+                }
+                if (json && (typeof json.popcorn === 'number' || typeof json.popcorn === 'string')) {
+                    var p = parseFloat(json.popcorn);
+                    if (!isNaN(p)) aud = p;
+                }
+                resolve({ critics: crit, audience: aud });
+            }, function () {
+                resolve({});
+            });
+        });
+    }
+
+    /**
+     * Парсит ответ OMDb в формате Rotten Tomatoes (резервный канал).
      */
     function parseOmdb(json) {
         var critics, audience;
         if (json && json.Response !== 'False') {
-            // Критики: tomatoMeter или элемент массива Ratings
             if (json.tomatoMeter && json.tomatoMeter !== 'N/A') {
                 var c = parseInt(json.tomatoMeter, 10);
                 if (!isNaN(c)) critics = c;
@@ -74,12 +111,11 @@
             if (Array.isArray(json.Ratings)) {
                 json.Ratings.forEach(function (e) {
                     if (e.Source === 'Rotten Tomatoes' && /\d+%/.test(e.Value)) {
-                        var val = parseInt(e.Value, 10);
-                        if (!isNaN(val)) critics = val;
+                        var v = parseInt(e.Value, 10);
+                        if (!isNaN(v)) critics = v;
                     }
                 });
             }
-            // Зрители: tomatoUserMeter или rating
             if (json.tomatoUserMeter && json.tomatoUserMeter !== 'N/A') {
                 var a = parseInt(json.tomatoUserMeter, 10);
                 if (!isNaN(a)) audience = a;
@@ -93,34 +129,26 @@
     }
 
     /**
-     * Выполняет запрос к OMDb по IMDb ID. Возвращает объект с рейтингами.
-     *
-     * @param {String} imdbId Значение IMDb ID (например, tt1234567)
+     * Делает запрос к OMDb по IMDb ID.
      */
-    function fetchRtByImdb(imdbId) {
+    function fetchOmdbByImdb(imdbId) {
         return new Promise(function (resolve) {
-            if (!imdbId) return resolve({});
-            if (!omdbKey) return resolve({});
+            if (!imdbId || !omdbKey) return resolve({});
             var request = new Lampa.Reguest();
             var url = 'https://www.omdbapi.com/?apikey=' + encodeURIComponent(omdbKey) + '&i=' + encodeURIComponent(imdbId) + '&tomatoes=true';
             request.timeout(20000);
             request.silent(url, function (json) {
                 resolve(parseOmdb(json));
-            }, function () {
-                resolve({});
-            });
+            }, function () { resolve({}); });
         });
     }
 
     /**
-     * Выполняет запрос к OMDb по названию и году. Возвращает объект с рейтингами.
-     *
-     * @param {String} title Название фильма/сериала
-     * @param {String} year Год выхода (четырёхзначный)
+     * Делает запрос к OMDb по названию и году. Используется, когда нет IMDb ID.
      */
-    function fetchRtByTitle(title, year) {
+    function fetchOmdbByTitle(title, year) {
         return new Promise(function (resolve) {
-            if (!omdbKey || !title) return resolve({});
+            if (!title || !omdbKey) return resolve({});
             var request = new Lampa.Reguest();
             var url = 'https://www.omdbapi.com/?apikey=' + encodeURIComponent(omdbKey) + '&t=' + encodeURIComponent(title);
             if (year) url += '&y=' + encodeURIComponent(year);
@@ -128,71 +156,58 @@
             request.timeout(20000);
             request.silent(url, function (json) {
                 resolve(parseOmdb(json));
-            }, function () {
-                resolve({});
-            });
+            }, function () { resolve({}); });
         });
     }
 
     /**
-     * Определяет, какой способ запросить данные (по IMDb ID или по названию),
-     * и возвращает Promise с объектом {critics, audience}.
-     *
-     * @param {Object} movie Объект фильма из Lampa
+     * Получает рейтинги Rotten Tomatoes для указанного фильма: сначала
+     * через MDBList (если есть ключ), затем резервно через OMDb.
      */
-    function getRtRatings(movie) {
+    function getRatings(movie) {
         return new Promise(function (resolve) {
             if (!movie) return resolve({});
-            // Пытаемся извлечь IMDb ID из разных свойств
             var imdbId = movie.imdb_id || movie.imdb || (movie.ids && movie.ids.imdb) || '';
-            // Иногда id передаётся как число без префикса tt; добавим, если нужно
-            if (imdbId && typeof imdbId === 'number') {
-                imdbId = 'tt' + imdbId;
-            }
-            // Если есть IMDb ID, используем его
-            var year;
+            if (imdbId && typeof imdbId === 'number') imdbId = 'tt' + imdbId;
             var date = movie.release_date || movie.first_air_date || movie.last_air_date || movie.year || '';
             var yearMatch = ('' + date).match(/\d{4}/);
-            if (yearMatch) year = yearMatch[0];
+            var year = yearMatch ? yearMatch[0] : '';
             var title = movie.original_title || movie.title || movie.original_name || movie.name;
-            if (imdbId) {
-                fetchRtByImdb(imdbId).then(function (res) {
-                    // Если не получили ничего, пробуем по названию
-                    if (!res || (res.critics === undefined && res.audience === undefined)) {
-                        fetchRtByTitle(title, year).then(resolve);
-                    } else {
-                        resolve(res);
+            // Сначала пробуем MDBList
+            fetchMdb(imdbId).then(function (res) {
+                if (res && (typeof res.critics === 'number' || typeof res.audience === 'number')) {
+                    return resolve(res);
+                }
+                // Если нет данных – OMDb по IMDb ID, затем по названию
+                fetchOmdbByImdb(imdbId).then(function (res2) {
+                    if (res2 && (typeof res2.critics === 'number' || typeof res2.audience === 'number')) {
+                        return resolve(res2);
                     }
+                    fetchOmdbByTitle(title, year).then(resolve);
                 });
-            } else {
-                fetchRtByTitle(title, year).then(resolve);
-            }
+            });
         });
     }
 
-    // Подписываемся на событие завершения загрузки карточки
+    // Обработчик события завершения построения карточки
     Lampa.Listener.follow('full', function (e) {
         if (e.type !== 'complite' || !e.data || !e.data.movie) return;
         var movie = e.data.movie;
         var renderRoot = $(e.object.activity.render());
-        // Ищем контейнер для вставки блока: новый или старый интерфейс
         var details = renderRoot.find('.full-start-new__details, .full-start__details, .full-start-new__info, .full-start__info');
         if (!details.length) {
-            // fallback: родитель заголовка
             details = renderRoot.find('.full-start-new__title, .full-start__title').parent();
             if (!details.length) details = renderRoot;
         }
-        getRtRatings(movie).then(function (rt) {
+        getRatings(movie).then(function (rt) {
             rt = rt || {};
-            var critics = (typeof rt.critics === 'number') ? rt.critics : undefined;
-            var audience = (typeof rt.audience === 'number') ? rt.audience : undefined;
-            var html = '<div class="rt-block">' +
-                buildItem(critics, CRITIC_EMOJI) +
-                buildItem(audience, AUDIENCE_EMOJI) +
+            var crit = (typeof rt.critics === 'number') ? rt.critics : undefined;
+            var aud  = (typeof rt.audience === 'number') ? rt.audience : undefined;
+            var html = '<div class="rt-mdb-block">' +
+                buildItem(crit, ICONS.criticsFresh, ICONS.criticsRotten) +
+                buildItem(aud, ICONS.audienceFresh, ICONS.audienceRotten) +
                 '</div>';
-            // Удаляем прежний блок, если он есть
-            details.find('.rt-block').remove();
-            // Вставляем наш блок
+            details.find('.rt-mdb-block').remove();
             details.append(html);
         });
     });
