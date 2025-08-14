@@ -30,6 +30,12 @@
     // на свой, если понадобится. Текущий ключ предоставлен пользователем.
     var mdblistKey = 'hx4fegxixdzg8yj9v8xu2agyj';
 
+    // RapidAPI ключ для дополнительных данных. Предоставлен пользователем.
+    // Этот ключ будет использоваться для вызова API "Movie Database Alternative" на RapidAPI,
+    // который иногда возвращает рейтинги Rotten Tomatoes.
+    var rapidApiKey = '992919a059msh2688f45058d5a3bp178661jsne0525affdede';
+    var rapidApiHost = 'movie-database-alternative.p.rapidapi.com';
+
     // --- Ссылки на SVG‑иконки Rotten Tomatoes от psahx ---
     var ICONS = {
         criticsFresh: 'https://psahx.github.io/ps_plug/Rotten_Tomatoes.svg',
@@ -161,6 +167,41 @@
     }
 
     /**
+     * Делает запрос к API "Movie Database Alternative" на RapidAPI по IMDb ID.
+     * Возвращает объект с {critics, audience}, где critics — процент
+     * Rotten Tomatoes из массива Ratings. Audience чаще всего отсутствует и
+     * будет undefined. Если запрос не удался, возвращает пустой объект.
+     */
+    function fetchRapidByImdb(imdbId) {
+        return new Promise(function (resolve) {
+            if (!imdbId || !rapidApiKey) return resolve({});
+            var request = new Lampa.Reguest();
+            // API Movie Database Alternative использует те же параметры, что и OMDb: i и r=json
+            var url = 'https://' + rapidApiHost + '/?i=' + encodeURIComponent(imdbId) + '&r=json';
+            // Формируем заголовки RapidAPI
+            var headers = {
+                'X-RapidAPI-Key': rapidApiKey,
+                'X-RapidAPI-Host': rapidApiHost
+            };
+            request.timeout(20000);
+            request.silent(url, function (json) {
+                var critics;
+                if (json && Array.isArray(json.Ratings)) {
+                    json.Ratings.forEach(function (e) {
+                        if (e.Source === 'Rotten Tomatoes' && /\d+%/.test(e.Value)) {
+                            var v = parseInt(e.Value, 10);
+                            if (!isNaN(v)) critics = v;
+                        }
+                    });
+                }
+                resolve({ critics: critics });
+            }, function () {
+                resolve({});
+            }, false, { headers: headers });
+        });
+    }
+
+    /**
      * Получает рейтинги Rotten Tomatoes для указанного фильма: сначала
      * через MDBList (если есть ключ), затем резервно через OMDb.
      */
@@ -178,12 +219,18 @@
                 if (res && (typeof res.critics === 'number' || typeof res.audience === 'number')) {
                     return resolve(res);
                 }
-                // Если нет данных – OMDb по IMDb ID, затем по названию
-                fetchOmdbByImdb(imdbId).then(function (res2) {
-                    if (res2 && (typeof res2.critics === 'number' || typeof res2.audience === 'number')) {
-                        return resolve(res2);
+                // Попробуем RapidAPI по IMDb ID
+                fetchRapidByImdb(imdbId).then(function (resRapid) {
+                    if (resRapid && typeof resRapid.critics === 'number') {
+                        return resolve(resRapid);
                     }
-                    fetchOmdbByTitle(title, year).then(resolve);
+                    // Затем OMDb по IMDb ID и по названию
+                    fetchOmdbByImdb(imdbId).then(function (res2) {
+                        if (res2 && (typeof res2.critics === 'number' || typeof res2.audience === 'number')) {
+                            return resolve(res2);
+                        }
+                        fetchOmdbByTitle(title, year).then(resolve);
+                    });
                 });
             });
         });
