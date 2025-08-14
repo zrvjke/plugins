@@ -111,7 +111,7 @@
      * Парсит ответ OMDb в формате Rotten Tomatoes (резервный канал).
      */
     function parseOmdb(json) {
-        var critics, audience;
+        var critics, audience, imdbId;
         if (json && json.Response !== 'False') {
             if (json.tomatoMeter && json.tomatoMeter !== 'N/A') {
                 var c = parseInt(json.tomatoMeter, 10);
@@ -134,7 +134,8 @@
                 if (!isNaN(num)) audience = num <= 10 ? Math.round(num * 10) : Math.round(num);
             }
         }
-        return { critics: critics, audience: audience };
+        if (json && json.imdbID) imdbId = json.imdbID;
+        return { critics: critics, audience: audience, imdbId: imdbId };
     }
 
     /**
@@ -232,7 +233,19 @@
                         if (res2 && (typeof res2.critics === 'number' || typeof res2.audience === 'number')) {
                             return resolve(res2);
                         }
-                        fetchOmdbByTitle(title, year).then(resolve);
+                        fetchOmdbByTitle(title, year).then(function(resByTitle){
+                        if (resByTitle && resByTitle.imdbId && mdblistKey) {
+                            fetchMdb(resByTitle.imdbId).then(function(mdbAgain){
+                                if (mdbAgain && (typeof mdbAgain.critics === 'number' || typeof mdbAgain.audience === 'number')) {
+                                    resolve(mdbAgain);
+                                } else {
+                                    resolve(resByTitle);
+                                }
+                            });
+                        } else {
+                            resolve(resByTitle);
+                        }
+                    });
                     });
                 });
             });
