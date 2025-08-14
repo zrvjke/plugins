@@ -1,459 +1,243 @@
 /*
- * Lampa plugin to display Rotten Tomatoes ratings (critics and audience) and
- * optionally hide the built‑in TMDb score. The plugin adds a new settings
- * section where users can supply an OMDb API key (free keys can be obtained
- * from http://www.omdbapi.com/apikey.aspx). Without a key the Rotten
- * Tomatoes ratings will remain as “--” until a key is entered. A toggle
- * allows hiding the default TMDb score shown in each card.
+ * Плагин для приложения Lampa (веб‑версия и десктоп), который заменяет
+ * стандартную строку рейтингов в карточке фильма/сериала на собственную.
+ * В новой строке отображаются: IMDb, Кинопоиск, Rotten Tomatoes (критики) и
+ * Rotten Tomatoes (зрители). Плагин обеспечивает настройку ввода API‑ключа
+ * OMDb, необходимого для получения оценок Rotten Tomatoes.
  *
- * This code follows the conventions used by existing Lampa plugins: it
- * registers itself with `SettingsApi` to add a configuration section, uses
- * `Listener.follow('full', ...)` to hook into card rendering and inject
- * additional rating elements, and caches user preferences via
- * `Lampa.Storage`.
+ * Как это работает:
+ * 1. При открытии карточки слушаем событие `full` и ждём, пока появится
+ *    контейнер с деталями (класс `.new-interface-info__details`).
+ * 2. Получаем рейтинги: IMDb и КП — через API Kinopoisk, RT — через OMDb.
+ *    Если данные недоступны, выводим `--`.
+ * 3. Составляем HTML‑строку из четырёх блоков с иконками и значениями.
+ *    Между блоками ставим точку (`•`).
+ * 4. Очищаем старую строку (если она есть), скрываем штатную строку
+ *    `.info__rate` и вставляем новую строку в начало контейнера.
+ *
+ * Чтобы использовать плагин:
+ * 1. Сохраните этот файл на GitHub или другом хостинге (например,
+ *    `https://raw.githubusercontent.com/<ваш_логин>/<репозиторий>/rating_rt_line.js`).
+ * 2. В Lampa перейдите в настройки → «Расширения», нажмите «Добавить плагин»
+ *    и вставьте URL вашего файла.
+ * 3. После установки в меню настроек появится пункт «Rating Rotten Tomatoes».
+ *    Введите туда свой API‑ключ OMDb (получить можно бесплатно на omdbapi.com).
+ *
+ * Плагин не собирает никаких личных данных. Исходный код открыт и понятен.
  */
 (function () {
     'use strict';
 
-    // Prevent the plugin from executing twice.  Some Lampa versions reload
-    // plugins on theme switch; protecting against double initialization
-    // avoids duplicate ratings in the UI.  Use a namespaced flag to minimise
-    // the chance of collisions with other scripts.
-    var flagName = '__rottenTomatoesPluginInjected__';
-    if (window[flagName]) return;
-    window[flagName] = true;
+    // Запрет повторной инициализации
+    if (window.rtLinePluginInjected) return;
+    window.rtLinePluginInjected = true;
+
+    // Ключ для хранения API‑ключа OMDb
+    var STORAGE_KEY = 'rt_line_apikey';
+
+    // Загружаем сохранённый API‑ключ (если есть)
+    var omdbKey = Lampa.Storage.get(STORAGE_KEY, '');
 
     /*
-     * Base64 encoded icons for Rotten Tomatoes.  The tomato icon is used for
-     * critic scores and the popcorn icon for audience scores.  These tiny
-     * vector-like bitmaps were created with Pillow so they embed cleanly
-     * without external network requests.
+     * Иконки. IMDb и Кинопоиск берём из репозитория psahx (они открыты),
+     * помидор и попкорн — закодированы в base64 (можно заменить на свои).
      */
-    var TOMATO_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAADzUlEQVR4nO2dMQ4EMQxEd1j9/5nlbVKF' +
-        'XOiYqKrsoiKiiIr8T1QelzAzwDOL3fPaWdqI1EAHYIdAB0CHQB0CHQB0CHQB0CHQB0OHUgmEjm/Nf24mvfcAZgxZ3f3z+0+f/53vcf' +
-        'uXyu+9WtR3/B87qcigAICBQiBg+BTBxpaMFAIgiIAiAcAei4XyZwyEMAsQiEgl6AMQDQBGgGMG4DgAh6HrAuIqI8C6AfCAlA4A+iF3h' +
-        'SiPDBACZxKVCA3gAmAdxIo1c1YhcAxCGwI4eZeM6AGAmcAjgDqPw/YOGhjbxMxkewusI+7j+dq8JOLn9B3d2ukpPmcUDw9ntsmXsFKH' +
-        '31vjQ7gBgAbAZ8B4AFoCiiNm13lQGkH4jKXHySqx8TxLwNgNECItgDwbvChBSHZgsBVAPgG+CowgmnTA4kgEsA7gGgB+Bzo3de+gxMO' +
-        'W93+QwCIEkgF4PHbQBBgC+ARIQYAdwBHAN4DZBFACEq2rdcE2q9C9vvDRO+mdZ27rS4e/dmv0ELTDwzwBsDLANwBTBBOn9DwbNvMvC1' +
-        'G0M0+1t4L6fNHT0z+ULBPnn3tZt7nJsgy0d5h0kQwQEEBBABBBAAEEEEAAQQQQAABBBBAAAEEEEAAAQQQQAABBBBAAAEEEEAAQQQQAA' +
-        'BBBBBAAAEEEEAAQfk2AD4AHJ/sRBALxvmwAAAABJRU5ErkJggg==';
-    var POPCORN_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAACHUlEQVR4nO3bMQ6CMBiA4f+z+5uGLMGI' +
-        'FAtAi9EMvrsaTRkNyq80xe7NcDmX3NW1oz1YmG2d7eoPBbFevn93kjBsY/t/cDx+v3veVG9kH3evvTnvRzU93v3xHuLq8y/4fDdNwTuA' +
-        '3kEHiH5HB3IP4kzvXw2HeL6CuBnRMZNHEdvH0ccBuaMee0frI/p7+94KMAUyYiKEcbqwdzryOiMxZlO1nO6kZ5LodKhxz72x/HXeE91Q' +
-        'tZssrT7K2523LEpJyOZ0T6mN+HT6wIfzgjpfgjxHTPIftI8jk2ikT5+Q25k7m85zCwvS0P4n3ns+GcP/fwSfyVwGvmvSx9T0W/Kc/TQv' +
-        'eLP2/+9nShvxqyP2u3F2/31hbCbwfDa2PjsyWU8HBjW4LajA/3HFr43x0uD1t49f3H0MscTr0H8EzkB/ATeBCcEzkEH+EfkEHyJ9RN+Q' +
-        'Qf4R+QQfInxAfMX19xr9/k49zlONu7Hmxt9n6Yedifq7tV5hMwzQmi7h82X4C+B7wKNQxFAgAAAAAASUVORK5CYII=';
-
-    // Keys used to persist settings in Lampa.Storage.  Changing these
-    // constants will reset saved preferences for existing users.
-    var STORAGE_KEY = 'rotten_tomatoes_api_key';
-    var STORAGE_DISABLE = 'rotten_tomatoes_disable_tmdb';
-
-    // Load persisted values or fall back to defaults.
-    var apiKey = Lampa.Storage.get(STORAGE_KEY, '');
-    var hideTmdb = Lampa.Storage.get(STORAGE_DISABLE, false);
+    var ICON_IMDB = 'https://psahx.github.io/ps_plug/IMDB.svg';
+    var ICON_KP   = 'https://psahx.github.io/ps_plug/kinopoisk-icon-main.svg';
+    var ICON_RT_CRITICS = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABqElEQVR42pWSsUoDQRCGXxVRIKC0KRiIyO1fRGwEbYh/gLzNcRP4CrQWpJQcXzRqsRC6IbWxtLAiIooJD2BV+e31JIRGgoRUk4+FuNmTO7O7MDyaVMvXdeZnTmfJ9DJM0keB2z/8dnMD1jwoHszLt8ZyDX3LKmiKYqg8ypEN4pfH2CScoSjm3BMqHI4AxDIEj7Z37D0hzxAbIEyaZfN4zY2jVmTQyjZqmUqE6ipzDmJkOvNmI0TyIJNwmgMhCRjTfzkWb4JQVlSDJJUgXvlpXzTAkF5z6j3pNktweqWEmGdt+yhVAkWgM1ieNZ7itVo+CIgk3m8ThYoWGhDRYEQKT72fJ4/XKZdF0usa1WxOYF6hRfvlYimu7pJqtxgMIhHDdRszMDPKo1wuq+1xks9KpkmKkLwY/9ZypICDZswCFRI3vcl7mxkZhfLy0XG1BpljCSZdvt6c/dDiKUkWsnt+MnMjzA8/DOvKGkZ5LsgaGUF5SguipjcR8D73KZlvrE3A6EQ7e98D+QsOEXR9DJAEAAAAAElFTkSuQmCC';
+    var ICON_RT_AUDIENCE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAABfElEQVR42pWSv0oDQRCHv0ouCkEFETrY2Ajo0LwxRDtY2KhiFx5nSUdpGHYhzF7a2RZ8g+FoYpIFVkJCJWIClbZJySCD3dOnAH38y3VZ267une+c+65P0hkzznQQzzyKD+fT+bswPefgUGc3Za4u7izdDAQrE9Rnk7vhNHHsTMUVmSqCIajSa5FxXGw5jkoyKYpGhoR5JNwQrMA0tlzh+NqZkLxJmsnlYLa6RSs64vEALjTjMkiYhRx2qFqrlzKelDcveQseDyT5iu1xgUIMgO265I6ZdxvNR/0O3uAGmCMA0L9XkvMRAnOGcL0E5gCJ1jHdZWi30EMDyGBVR6X3G5PjQxcP4F2Ac75Dpq2p+XHFgTIGppmE9/pVDlOlhTO5xAei4aGmbj3m4rzrXfY9X9t4hFoPdVUSz2dwjicr7U9iTn13gBk7ZdVddzLEAAAAASUVORK5CYII=';
 
     /**
-     * Attempt to parse query parameters from the script URL.  Users can
-     * optionally append `?apikey=<key>&hidetmdb=1` to the plugin URL when
-     * registering it in Lampa.  If present, these parameters override
-     * persisted values and are immediately saved to storage.  This is a
-     * convenience for environments where the settings UI is not yet
-     * available or to pre‑configure values for multiple devices.
+     * Добавляем строки перевода. Формат: ключ: { ru: '…', en: '…' }.
      */
-    try {
-        var currentScript = document.currentScript || (function () {
-            var scripts = document.getElementsByTagName('script');
-            return scripts[scripts.length - 1];
-        })();
-        if (currentScript && currentScript.src) {
-            var srcUrl = new URL(currentScript.src, window.location.href);
-            var params = srcUrl.searchParams;
-            var urlKey = params.get('apikey');
-            var urlHide = params.get('hidetmdb');
-            if (urlKey) {
-                apiKey = urlKey.trim();
-                Lampa.Storage.set(STORAGE_KEY, apiKey);
-            }
-            if (urlHide !== null) {
-                hideTmdb = (urlHide === '1' || urlHide.toLowerCase() === 'true');
-                Lampa.Storage.set(STORAGE_DISABLE, hideTmdb);
-            }
-        }
-    } catch (e) {
-        // Fail silently if URL parsing fails
-    }
-
-    /*
-     * Localized strings.  These keys mirror the plugin function names and
-     * descriptions shown to the user.  Russian and English translations are
-     * provided here; additional languages can be added following the same
-     * structure.
-     */
-    // Register translation keys.  Each key has language sub‑objects rather than
-    // grouping by language.  This mirrors the pattern used in other Lampa
-    // plugins such as MDBList, ensuring translations are resolved correctly.
     Lampa.Lang.add({
-        // Name of the plugin in the settings menu
-        settings_rt_plugin_name: {
-            en: 'Rating Rotten Tomatoes',
-            ru: 'Рейтинг Rotten Tomatoes'
+        rt_line_plugin_name: {
+            ru: 'Rating Rotten Tomatoes',
+            en: 'Rating Rotten Tomatoes'
         },
-        // API key field label and description
-        settings_rt_api_key_name: {
-            en: 'Enter OMDb API Key',
-            ru: 'Введите API ключ OMDb'
+        rt_line_api_key_name: {
+            ru: 'Введите API‑ключ OMDb',
+            en: 'Enter OMDb API key'
         },
-        settings_rt_api_key_desc: {
-            en: 'Provide your OMDb API key (Rotten Tomatoes).',
-            ru: 'Укажите ваш API ключ OMDb (Rotten Tomatoes).'
+        rt_line_api_key_desc: {
+            ru: 'Ключ необходим для получения Rotten Tomatoes',
+            en: 'Key is needed for Rotten Tomatoes ratings'
         },
-        // TMDb toggle field label and description
-        settings_rt_disable_tmdb_label: {
-            en: 'Hide TMDb rating',
-            ru: 'Выключить рейтинг TMDb'
-        },
-        settings_rt_disable_tmdb_descr: {
-            en: 'Remove the built‑in TMDb rating from cards.',
-            ru: 'Удаляет встроенную оценку TMDb из карточек.'
-        },
-        // Labels for critic and audience ratings in the card
-        settings_rt_label_critics: {
-            en: 'Critics',
-            ru: 'Критики'
-        },
-        settings_rt_label_audience: {
-            en: 'Audience',
-            ru: 'Зрители'
-        },
-        // Notification when the API key is saved successfully
-        settings_rt_api_key_saved: {
-            en: 'API key saved successfully',
-            ru: 'API ключ успешно сохранён'
-        },
-
-        // Fallback keys for older Lampa versions that expect single
-        // "setting_" prefixes instead of "settings_".  They map to the
-        // same translations as the primary keys above.  Including these
-        // ensures the UI remains user‑friendly even if the plugin name
-        // references differ.
-        setting_rt_plugin_name: {
-            en: 'Rating Rotten Tomatoes',
-            ru: 'Рейтинг Rotten Tomatoes'
-        },
-        setting_rt_api_key_label: {
-            en: 'Enter OMDb API Key',
-            ru: 'Введите API ключ OMDb'
-        },
-        setting_rt_api_key_descr: {
-            en: 'Provide your OMDb API key (Rotten Tomatoes).',
-            ru: 'Укажите ваш API ключ OMDb (Rotten Tomatoes).'
-        },
-        setting_rt_disable_tmdb_label: {
-            en: 'Hide TMDb rating',
-            ru: 'Выключить рейтинг TMDb'
-        },
-        setting_rt_disable_tmdb_descr: {
-            en: 'Remove the built‑in TMDb rating from cards.',
-            ru: 'Удаляет встроенную оценку TMDb из карточек.'
-        },
-        setting_rt_label_critics: {
-            en: 'Critics',
-            ru: 'Критики'
-        },
-        setting_rt_label_audience: {
-            en: 'Audience',
-            ru: 'Зрители'
-        },
-        setting_rt_api_key_saved: {
-            en: 'API key saved successfully',
-            ru: 'API ключ успешно сохранён'
+        rt_line_api_key_saved: {
+            ru: 'API‑ключ сохранён',
+            en: 'API key saved'
         }
     });
 
     /**
-     * Write a new API key to persistent storage.  After saving the key
-     * we refresh the settings UI so the button description reflects the
-     * presence of a key.
-     *
-     * @param {string} key New API key from the user
-     */
-    function setApiKey(key) {
-        apiKey = key || '';
-        Lampa.Storage.set(STORAGE_KEY, apiKey);
-        Lampa.Settings.update();
-    }
-
-    /**
-     * Persist the TMDb hide setting.  Updates internal state and refreshes
-     * settings.  Cards that have already been rendered will not be updated
-     * retroactively; the user may need to reopen them to see the change.
-     *
-     * @param {boolean} flag Whether to hide the TMDb rating
-     */
-    function setHideTmdb(flag) {
-        hideTmdb = flag;
-        Lampa.Storage.set(STORAGE_DISABLE, hideTmdb);
-        Lampa.Settings.update();
-    }
-
-    /**
-     * Register the plugin’s configuration section in Lampa’s settings.  We
-     * define a component (a folder) under which we create two parameters: a
-     * button for entering the API key and a toggle to disable the TMDb rating.
+     * Регистрация настроек плагина. В меню появится пункт, где можно ввести API‑ключ.
      */
     function registerSettings() {
-        // Define a small inline SVG for the menu icon.  The design is a
-        // stylised film reel, chosen to distinguish the plugin from others.
-        var svgIcon = '<svg viewBox="0 0 24 24" width="24" height="24" xmlns="http://www.w3.org/2000/svg">' +
-            '<circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" fill="none" />' +
-            '<circle cx="8" cy="8" r="2" fill="currentColor" />' +
-            '<circle cx="16" cy="8" r="2" fill="currentColor" />' +
-            '<circle cx="8" cy="16" r="2" fill="currentColor" />' +
-            '<circle cx="16" cy="16" r="2" fill="currentColor" />' +
-            '</svg>';
-
-        // Create the settings folder.  The `component` identifier must be
-        // unique within all installed plugins.
+        var svgIcon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">' +
+            '<path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/></svg>';
         Lampa.SettingsApi.addComponent({
-            component: 'rotten_tomatoes',
-            name: Lampa.Lang.translate('settings_rt_plugin_name'),
+            component: 'rt_line_plugin',
+            name: Lampa.Lang.translate('rt_line_plugin_name'),
             icon: svgIcon
         });
-
-        // Input field for the OMDb API key. Lampa’s Settings API supports
-        // type:'input' which renders a text box. We bind the storage key to
-        // `STORAGE_KEY` so that the value persists automatically. The
-        // default and placeholder are populated from the current value.
         Lampa.SettingsApi.addParam({
-            component: 'rotten_tomatoes',
+            component: 'rt_line_plugin',
             param: {
                 name: STORAGE_KEY,
                 type: 'input',
-                default: apiKey,
+                default: omdbKey,
                 values: {},
-                placeholder: Lampa.Lang.translate('settings_rt_api_key_desc')
+                placeholder: ''
             },
             field: {
-                name: Lampa.Lang.translate('settings_rt_api_key_name'),
-                description: Lampa.Lang.translate('settings_rt_api_key_desc')
+                name: Lampa.Lang.translate('rt_line_api_key_name'),
+                description: Lampa.Lang.translate('rt_line_api_key_desc')
             },
-            onChange: function (value) {
-                // When the user changes the API key, update our cached value
-                // and persist it to storage.  Some versions of Lampa pass
-                // the new value as the first argument to onChange; others
-                // simply update Lampa.Storage directly.  Fallback to
-                // Lampa.Storage.get() if the argument is undefined.
-                var newKey = (typeof value !== 'undefined') ? value : Lampa.Storage.get(STORAGE_KEY, '');
-                setApiKey(newKey);
-
-                // Show a notification indicating that the key was saved.  This
-                // uses Lampa's built‑in toast system.  Translate the
-                // message to the current language.
-                try {
-                    var msg = Lampa.Lang.translate('settings_rt_api_key_saved');
-                    Lampa.Noty.show(msg);
-                } catch (e) {
-                    // Noty might not be available in very old versions of Lampa.
-                }
-            }
-        });
-
-        // Toggle parameter to hide the TMDb rating.  Use type:'trigger' for
-        // a boolean switch.  The default value is taken from storage.
-        Lampa.SettingsApi.addParam({
-            component: 'rotten_tomatoes',
-            param: {
-                name: STORAGE_DISABLE,
-                type: 'trigger',
-                default: hideTmdb
-            },
-            field: {
-                name: Lampa.Lang.translate('settings_rt_disable_tmdb_label'),
-                description: Lampa.Lang.translate('settings_rt_disable_tmdb_descr')
-            },
-            onChange: function (value) {
-                setHideTmdb(value);
+            onChange: function (val) {
+                omdbKey = val || '';
+                Lampa.Storage.set(STORAGE_KEY, omdbKey);
+                try { Lampa.Noty.show(Lampa.Lang.translate('rt_line_api_key_saved')); } catch (e) {}
             }
         });
     }
-
-    // Register settings once the Settings API is available.  Some versions of
-    // Lampa initialize plugins before the settings module, so we defer
-    // registration until the call stack is empty.
-    setTimeout(registerSettings, 0);
+    // Регистрация с минимальной задержкой, чтобы SettingsApi успела инициализироваться
+    setTimeout(registerSettings, 100);
 
     /**
-     * Hook into card rendering.  The `full` event fires when Lampa has
-     * finished populating a movie or series card.  We inspect the card’s DOM
-     * to insert our rating elements and optionally hide the TMDb rating.  A
-     * lookup is performed via the passed data object to determine the title
-     * and year used in the OMDb query.
+     * Получение рейтингов IMDb и КП через неофициальный API Kinopoisk.
+     * @param {Object} movie Объект фильма, содержащий imdb_id или imdbId
+     * @returns {Promise<{imdb?: string, kp?: string}>}
      */
-    Lampa.Listener.follow('full', function (event) {
-        // We only care about the `complite` stage when the card is fully
-        // rendered.  The event object also carries the card’s movie data.
-        if (event.type !== 'complite') return;
-
-        // Set up injection and observation.  Defer to ensure the DOM is ready.
-        setTimeout(function () {
-            var renderRoot = event.object.activity.render();
-            var data = event.data || {};
-            var movie = data.movie || data.item || data.card || {};
-
-            /**
-             * Insert Rotten Tomatoes placeholders and optionally hide the
-             * TMDb rating.  If the placeholders already exist this
-             * function returns immediately.  Otherwise it appends the
-             * critic and audience spans to the info__rate container and
-             * initiates a rating fetch if an API key is available.
-             */
-            function insertRtElements() {
-                // Prevent duplicates
-                if ($('.rate--rt-critics', renderRoot).length) return;
-
-                // Use jQuery’s find on renderRoot to reliably locate the
-                // rating container regardless of the type of renderRoot.
-                var infoRate = $(renderRoot).find('.info__rate');
-                if (!infoRate.length) return;
-
-                if (hideTmdb) {
-                    var defaultRate = infoRate.find('.rate').first();
-                    defaultRate.addClass('hide');
-                }
-
-                var criticsSpan = $('<span class="rate rate--rt-critics"></span>');
-                criticsSpan.append('<div class="rt-critics-value"><img src="' + TOMATO_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">--</div>');
-                criticsSpan.append('<div>' + Lampa.Lang.translate('settings_rt_label_critics') + '</div>');
-                var audienceSpan = $('<span class="rate rate--rt-audience"></span>');
-                audienceSpan.append('<div class="rt-audience-value"><img src="' + POPCORN_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">--</div>');
-                audienceSpan.append('<div>' + Lampa.Lang.translate('settings_rt_label_audience') + '</div>');
-                infoRate.append(criticsSpan);
-                infoRate.append(audienceSpan);
-
-                // If no API key, leave placeholders
-                if (!apiKey) return;
-
-                // Extract title and year for OMDb
-                var title = movie.original_title || movie.title || movie.original_name || movie.name;
-                var date = movie.release_date || movie.first_air_date || movie.last_air_date || movie.year || '';
-                var year = '';
-                if (date) {
-                    var match = (date + '').match(/\d{4}/);
-                    if (match) year = match[0];
-                }
-                if (!title) return;
-                fetchRtRatings(title, year, apiKey).then(function (ratings) {
-                    updateRatings(renderRoot, ratings);
-                }).catch(function () {});
+    function getKpImdb(movie) {
+        return new Promise(function (resolve) {
+            var imdbId = movie && (movie.imdb_id || movie.imdbId || movie.imdbID);
+            if (!imdbId) {
+                resolve({});
+                return;
             }
-
-            // Perform initial insertion
-            insertRtElements();
-
-            // Observe mutations on the rating container and reinsert if needed
-            // Select the rating container for observation.  Since
-            // renderRoot may not be a plain DOM element but instead an object
-            // returned by Lampa’s renderer, we use jQuery to find the
-            // element and then take the first node.  Without this, calling
-            // querySelector on renderRoot may throw an error.
-            var infoRateEl = $('.info__rate', renderRoot).get(0);
-            if (!infoRateEl) return;
-            var observer = new MutationObserver(function () {
-                insertRtElements();
+            var network = new Lampa.Reguest();
+            var url = 'https://kinopoiskapiunofficial.tech/api/v2.2/films?imdbId=' + encodeURIComponent(imdbId);
+            network.timeout(15000);
+            network.silent(url, function (json) {
+                var imdb, kp;
+                if (json && json.items && json.items.length) {
+                    var film = json.items[0];
+                    imdb = film.ratingImdb;
+                    kp   = film.ratingKinopoisk;
+                } else if (json && json.ratingImdb) {
+                    imdb = json.ratingImdb;
+                    kp   = json.ratingKinopoisk;
+                }
+                resolve({ imdb: imdb, kp: kp });
+            }, function () {
+                resolve({});
+            }, false, {
+                headers: { 'X-API-KEY': '2a4a0808-81a3-40ae-b0d3-e11335ede616' }
             });
-            observer.observe(infoRateEl, { childList: true, subtree: false });
-        }, 0);
-    });
+        });
+    }
 
     /**
-     * Perform a network request to OMDb to fetch Rotten Tomatoes ratings for
-     * a given title and year.  We request extended fields by including
-     * `tomatoes=true` in the query.  OMDb may not always return Rotten
-     * Tomatoes data due to legal restrictions; in that case both values
-     * will remain undefined.
-     *
-     * @param {string} title Movie or series title
-     * @param {string} year  Year extracted from the Lampa card (may be blank)
-     * @param {string} key   OMDb API key
-     * @returns {Promise<Object>} Resolves with an object containing
-     *                            critic and audience scores (as strings) or
-     *                            undefined if not available
+     * Получение рейтингов Rotten Tomatoes из OMDb.
+     * @param {string} title Название фильма/сериала
+     * @param {string} year  Год (может быть пустой)
+     * @returns {Promise<{critics?: string, audience?: string}>}
      */
-    function fetchRtRatings(title, year, key) {
-        return new Promise(function (resolve, reject) {
-            var request = new Lampa.Reguest();
-            var url = 'https://www.omdbapi.com/?apikey=' + encodeURIComponent(key) +
-                '&t=' + encodeURIComponent(title);
+    function getRt(title, year) {
+        return new Promise(function (resolve) {
+            if (!omdbKey || !title) {
+                resolve({});
+                return;
+            }
+            var req = new Lampa.Reguest();
+            var url = 'https://www.omdbapi.com/?apikey=' + encodeURIComponent(omdbKey) + '&t=' + encodeURIComponent(title);
             if (year) url += '&y=' + encodeURIComponent(year);
             url += '&tomatoes=true';
-            request.timeout(20000);
-            request.silent(url, function (json) {
-                if (!json || json.Response === 'False') return resolve({});
-
-                var critics;
-                var audience;
-
-                // Check the Ratings array for Rotten Tomatoes critic score.
-                if (Array.isArray(json.Ratings)) {
-                    json.Ratings.forEach(function (entry) {
-                        if (entry.Source === 'Rotten Tomatoes') {
-                            var val = entry.Value;
-                            if (val && /\d+%/.test(val)) {
-                                critics = val.replace('%', '');
+            req.timeout(20000);
+            req.silent(url, function (json) {
+                var critics, audience;
+                if (json && json.Response !== 'False') {
+                    if (Array.isArray(json.Ratings)) {
+                        json.Ratings.forEach(function (e) {
+                            if (e.Source === 'Rotten Tomatoes' && /\d+%/.test(e.Value)) {
+                                critics = e.Value.replace('%', '');
                             }
-                        }
-                    });
-                }
-
-                // OMDb may expose additional fields when `tomatoes=true`.  Use
-                // these values if present; they supersede the Ratings array.
-                if (json.tomatoMeter && json.tomatoMeter !== 'N/A') critics = json.tomatoMeter;
-                if (json.tomatoUserMeter && json.tomatoUserMeter !== 'N/A') audience = json.tomatoUserMeter;
-
-                // Some versions of OMDb return user ratings out of 10.  Convert
-                // such numbers to a percentage by multiplying by 10.  If the
-                // field is numeric but less than or equal to 10, treat it as
-                // a rating out of 10; otherwise assume it’s already a percent.
-                if (!audience && json.tomatoUserRating && json.tomatoUserRating !== 'N/A') {
-                    var numeric = parseFloat(json.tomatoUserRating);
-                    if (!isNaN(numeric)) {
-                        if (numeric <= 10) audience = (numeric * 10).toFixed(0);
-                        else audience = numeric.toString();
+                        });
+                    }
+                    if (json.tomatoMeter && json.tomatoMeter !== 'N/A') critics = json.tomatoMeter;
+                    if (json.tomatoUserMeter && json.tomatoUserMeter !== 'N/A') audience = json.tomatoUserMeter;
+                    if (!audience && json.tomatoUserRating && json.tomatoUserRating !== 'N/A') {
+                        var num = parseFloat(json.tomatoUserRating);
+                        if (!isNaN(num)) audience = num <= 10 ? (num * 10).toFixed(0) : num.toString();
                     }
                 }
-
                 resolve({ critics: critics, audience: audience });
             }, function () {
-                reject();
-            }, false, {});
+                resolve({});
+            });
         });
     }
 
     /**
-     * Update the DOM with Rotten Tomatoes scores.  Replaces the placeholder
-     * values “--” with actual numbers followed by a percent sign.  If a
-     * particular score is missing, the placeholder remains unchanged.
-     *
-     * @param {jQuery} renderRoot The root element of the card
-     * @param {Object} ratings    Object with `critics` and `audience` strings
+     * Формирование блока рейтинга. Возвращает HTML‑строку.
+     * @param {string|number|undefined} value Значение рейтинга
+     * @param {string} icon URL иконки
+     * @param {string} alt Текст для alt
      */
-    function updateRatings(renderRoot, ratings) {
-        var criticsText = ratings && ratings.critics ? ratings.critics + '%' : '--';
-        var audienceText = ratings && ratings.audience ? ratings.audience + '%' : '--';
-
-        // Update critics rating.  Only replace the contents of the first div
-        // (rt-critics-value) so the label remains intact.
-        $('.rate--rt-critics .rt-critics-value', renderRoot).each(function () {
-            $(this).html('<img src="' + TOMATO_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">' +
-                criticsText);
-        });
-
-        // Update audience rating.  Only replace the value portion.
-        $('.rate--rt-audience .rt-audience-value', renderRoot).each(function () {
-            $(this).html('<img src="' + POPCORN_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">' +
-                audienceText);
-        });
+    function renderItem(value, icon, alt) {
+        var display = (value === undefined || value === null || value === '') ? '--' : value;
+        return '<div class="full-start__rate custom-rt-item"><div>' + display + '</div>' +
+            '<img src="' + icon + '" alt="' + alt + '" class="custom-rt-icon" draggable="false"></div>';
     }
+
+    /**
+     * Обработчик события `full`: создаём новую строку рейтингов.
+     */
+    Lampa.Listener.follow('full', function (event) {
+        if (event.type !== 'complite') return;
+        var data  = event.data || {};
+        var movie = data.movie || data.item || data.card || {};
+        var render = event.object.activity.render();
+        // Ищем контейнер деталей
+        var $details = $(render).find('.new-interface-info__details');
+        if (!$details.length) {
+            var $oldRate = $(render).find('.info__rate');
+            if ($oldRate.length) $details = $oldRate.parent();
+        }
+        if (!$details.length) return;
+        // Функция вставки строки
+        function insertLine() {
+            var date = movie.release_date || movie.first_air_date || movie.last_air_date || movie.year || '';
+            var year = '';
+            if (date) {
+                var m = ('' + date).match(/\d{4}/);
+                if (m) year = m[0];
+            }
+            var title = movie.original_title || movie.title || movie.original_name || movie.name;
+            Promise.all([getKpImdb(movie), getRt(title, year)]).then(function (vals) {
+                var kpimdb = vals[0] || {};
+                var rt     = vals[1] || {};
+                var items  = [];
+                if (kpimdb.imdb) {
+                    var v = parseFloat(kpimdb.imdb);
+                    if (!isNaN(v)) v = v.toFixed(1);
+                    items.push(renderItem(v, ICON_IMDB, 'IMDb'));
+                } else items.push(renderItem(undefined, ICON_IMDB, 'IMDb'));
+                if (kpimdb.kp) {
+                    var vk = parseFloat(kpimdb.kp);
+                    if (!isNaN(vk)) vk = vk.toFixed(1);
+                    items.push(renderItem(vk, ICON_KP, 'Kinopoisk'));
+                } else items.push(renderItem(undefined, ICON_KP, 'Kinopoisk'));
+                items.push(renderItem(rt.critics ? rt.critics + '%' : undefined, ICON_RT_CRITICS, 'RT Critics'));
+                items.push(renderItem(rt.audience ? rt.audience + '%' : undefined, ICON_RT_AUDIENCE, 'RT Audience'));
+                var html = items.join('<span class="new-interface-info__split">&#9679;</span>');
+                var line = '<div class="line-one-details custom-rt-line">' + html + '</div>';
+                $details.find('.line-one-details.custom-rt-line').remove();
+                $details.prepend(line);
+                $(render).find('.info__rate').addClass('hide');
+            });
+        }
+        setTimeout(insertLine, 100);
+    });
 
 })();
