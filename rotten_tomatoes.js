@@ -457,29 +457,3 @@
     }
 
 })();
-     * Update the DOM with Rotten Tomatoes scores.  Replaces the placeholder
-     * values “--” with actual numbers followed by a percent sign.  If a
-     * particular score is missing, the placeholder remains unchanged.
-     *
-     * @param {jQuery} renderRoot The root element of the card
-     * @param {Object} ratings    Object with `critics` and `audience` strings
-     */
-    function updateRatings(renderRoot, ratings) {
-        var criticsText = ratings && ratings.critics ? ratings.critics + '%' : '--';
-        var audienceText = ratings && ratings.audience ? ratings.audience + '%' : '--';
-
-        // Update critics rating.  Only replace the contents of the first div
-        // (rt-critics-value) so the label remains intact.
-        $('.rate--rt-critics .rt-critics-value', renderRoot).each(function () {
-            $(this).html('<img src="' + TOMATO_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">' +
-                criticsText);
-        });
-
-        // Update audience rating.  Only replace the value portion.
-        $('.rate--rt-audience .rt-audience-value', renderRoot).each(function () {
-            $(this).html('<img src="' + POPCORN_ICON + '" style="height:1em;width:1em;margin-right:0.2em;vertical-align:-0.1em;">' +
-                audienceText);
-        });
-    }
-
-})();
