@@ -1,241 +1,192 @@
-/*
- * Lampa Plugin: Hide quality labels and add a semiвЂ‘transparent backdrop to genres
- *
- * This plugin removes quality/source tags (WEBRip, TS, BDRip, 4K, etc.)
- * from movie/series cards and the information panel, then applies a
- * uniform semiвЂ‘transparent black background to each genre listed on
- * the detail page.  The genres are detected from the movie object
- * provided by Lampa where possible; if unavailable, text is split on
- * commas in the information panel itself.  Each genre is wrapped
- * separately when multiple genres are listed together.  The goal is
- * similar to the genre styling in ui_new.js but uses a single
- * semiвЂ‘transparent background (no perвЂ‘genre colours) like the
- * RottenВ Tomatoes rating blocks (rgba(0,0,0,0.4))гЂђ271215840515611вЂ L59-L64гЂ‘.
- */
+// Lampa plugin: Hide quality information and style genres on detail cards.
+//
+// This plugin is inspired by the Interface MOD and RT Rating plugins. It hides
+// quality markers (4K, WEBвЂ‘DL, HDRip, etc.) from the movie/series information
+// panel in the detail view (to the right of the poster) and applies a
+// semiвЂ‘transparent background to genre and tag elements. It also removes
+// season and episode counters on TV series and cleans up bullet separators
+// that become orphaned after removal. The plugin does not interfere with
+// comments or list views. It registers itself with Lampa when possible.
 
 (function () {
     'use strict';
-    // Ensure the plugin only runs once and only when Lampa is available
-    if (!window.Lampa || window.semitransparentGenrePluginInjected) return;
-    window.semitransparentGenrePluginInjected = true;
+    // Ensure Lampa exists and avoid multiple injections
+    if (!window.Lampa || window.hideQualityGenrePluginInjected) return;
+    window.hideQualityGenrePluginInjected = true;
 
     /**
-     * Inject a stylesheet to globally hide quality/source labels on cards.
-     * Quality badges are contained in `.card__quality` elements and
-     * occasionally appear as a modifier on `.card__view` (the preview
-     * overlay).  This CSS hides them everywhere in the interface.
+     * Determine if the given text is likely a quality indicator.
+     * We exclude simple numeric ratings and the вЂњTVвЂќ label.
+     *
+     * @param {string} text
+     * @returns {boolean}
      */
-    function injectHideQualityStyle() {
-        if (document.getElementById('semigenre-hide-quality-style')) return;
-        var style = document.createElement('style');
-        style.id = 'semigenre-hide-quality-style';
-        style.textContent = [
-            '/* Hide quality/source labels and durations in movie/series cards */',
-            '.card__quality,',
-            '.card__view--quality,',
-            '.card__time {',
-            '    display: none !important;',
-            '}',
-            ''
-        ].join('\n');
-        document.head.appendChild(style);
+    function isQualityText(text) {
+        if (!text) return false;
+        var t = text.trim().toUpperCase();
+        if (!t) return false;
+        if (/^\d+(\.\d+)?$/.test(t) || t === 'TV') return false;
+        var tokens = [
+            '4K', '8K', 'HD', 'FHD', 'FULLHD', 'UHD', 'BD', 'BDRIP', 'HDRIP',
+            'HDR', 'WEBDL', 'WEB-DL', 'WEB', 'WEBRIP', 'HDTV', 'TS', 'CAM',
+            'CAMRIP', 'DVDRIP', 'DVDSCR', 'DVD', '360P', '480P', '720P',
+            '1080P', '1440P', '2160P', 'HDR10'
+        ];
+        if (tokens.indexOf(t) !== -1) return true;
+        return /(BLURAY|HDRIP|WEB\s?DL|WEBRIP|HDTV|DVDRIP|TS|CAM|4K|8K|2160P|1080P|720P|360P|480P)/i.test(t);
     }
 
     /**
-     * Regular expression used to detect quality or source descriptors
-     * embedded in spans.  Matches common tags such as WEBRip, HDRip,
-     * BluRay, BDRip, TS, CAM, 4K, etc.  Any span matching this pattern
-     * will be removed from the information panel entirely.
+     * Remove quality, season and episode information from the detail panel.
+     * Also remove bullet separators directly preceding removed entries.
      */
-    var QUALITY_PATTERN = /\b(?:WEB\s?Rip|WEB|HDRip|HDTV|BluRay|DVDRip|BDRip|TS|CAM|4K|8K|2160p|1080p|720p)\b/i;
-
-    /**
-     * Regular expressions used to detect runtime and season/episode descriptors
-     * in the details panel.  Many cards display a runtime (e.g. "120 РјРёРЅ", "1С‡ 45 РјРёРЅ",
-     * "2h 10m") or, for series, a count of seasons and episodes (e.g. "3 СЃРµР·РѕРЅР°",
-     * "2 seasons 16 episodes").  These spans should be removed entirely to
-     * mirror the behaviour in the reference plugin, which hides such information.
-     *
-     * DURATION_PATTERN matches digits combined with common Russian or English
-     * abbreviations for hours and minutes.  SEASON_EPISODE_PATTERN matches
-     * digits together with words like "season", "seasons", "episode", "episodes",
-     * "СЃРµР·РѕРЅ", "СЃРµСЂРёР№" and their inflections.  We test for digits to avoid
-     * accidentally removing other textual elements like "РіРѕРґ" (year).
-     */
-    var DURATION_PATTERN = /(?:\d+\s*(?:С‡|С‡Р°СЃ|С‡Р°СЃР°|С‡Р°СЃРѕРІ|h|hr|hour|hrs)\s*\d*\s*(?:РјРёРЅ|РјРёРЅСѓС‚|m|min|minute|minutes)?|\d+\s*(?:РјРёРЅ|РјРёРЅСѓС‚|m|min|minute|minutes)|\d+\s*:\s*\d+)/i;
-    var SEASON_EPISODE_PATTERN = /\d+\s*(?:СЃРµР·РѕРЅ|СЃРµР·РѕРЅРѕРІ|season|seasons|СЃРµСЂРёР№|СЃРµСЂРёСЏ|СЃРµСЂРёРё|episode|episodes)/i;
-
-    /**
-     * Apply a uniform semiвЂ‘transparent style to a jQuery element
-     * representing a single genre.  The background colour mirrors
-     * RottenВ Tomatoes blocks (`rgba(0,0,0,0.4)`)гЂђ271215840515611вЂ L59-L64гЂ‘ and the text is white.
-     *
-     * @param {jQuery} $el The element to style
-     */
-    function applyGenreStyle($el) {
-        $el.css({
-            'background-color': 'rgba(0, 0, 0, 0.4)',
-            'color': '#fff',
-            'border-radius': '0.3em',
-            'padding': '0.2em 0.5em',
-            'white-space': 'nowrap',
-            'margin-right': '0.2em'
-        });
-    }
-
-    /**
-     * Style the genres in the details panel.  Removes quality tags,
-     * builds a unique list of genres from the movie object (or
-     * fallback parsing), then wraps/composes spans so that each
-     * individual genre receives a semiвЂ‘transparent backdrop.  NonвЂ‘genre
-     * items (such as ratings or duration) are left untouched.
-     *
-     * @param {jQuery} $details  The container holding detail spans
-     * @param {Object} movie     The movie object from Lampa
-     */
-    function styleGenres($details, movie) {
-        if (!$details || !$details.length) return;
-        // 1. Remove quality/source tags and runtime/season information from the details panel
-        $details.find('span').each(function () {
-            var $span = window.$(this);
-            var txt = $span.text().trim();
-            // Remove if it matches a known quality label
-            if (QUALITY_PATTERN.test(txt)) {
-                $span.remove();
-                return;
+    function removeQualityInfo() {
+        try {
+            // Remove the quality tag near the poster
+            document.querySelectorAll('.tag--quality').forEach(function (el) {
+                el.remove();
+            });
+            // Localized вЂњqualityвЂќ word from Lampa
+            var qKey = '';
+            try {
+                qKey = (Lampa.Lang.translate('player_quality') || '').toLowerCase();
+            } catch (e) {
+                qKey = '';
             }
-            // Remove if it appears to describe duration (e.g. "120 РјРёРЅ", "1h 40m")
-            // or season/episode counts (e.g. "2 СЃРµР·РѕРЅР°", "3 seasons 24 episodes").
-            // To avoid false positives, ensure the span contains at least one digit.
-            if (/\d/.test(txt) && (DURATION_PATTERN.test(txt) || SEASON_EPISODE_PATTERN.test(txt))) {
-                $span.remove();
-            }
-        });
-
-        // 2. Build a list of genres from the movie object if available
-        var genreList = [];
-        if (movie && movie.genres) {
-            if (Array.isArray(movie.genres)) {
-                genreList = movie.genres.map(function (g) { return String(g).trim(); });
-            } else if (typeof movie.genres === 'string') {
-                movie.genres.split(',').forEach(function (g) {
-                    var t = g.trim();
-                    if (t) genreList.push(t);
-                });
-            }
-        }
-
-        // 3. Fallback: if no genres available via movie object, parse spans
-        if (genreList.length === 0) {
-            $details.find('span').each(function () {
-                var text = window.$(this).text().trim();
+            // Patterns for season and episode counters
+            var seasonPrefixes = ['СЃРµР·РѕРЅ', 'СЃРµР·РѕРЅС‹', 'seasons', 'season'];
+            var episodePrefixes = ['СЃРµСЂРёРё', 'СЃРµСЂРёСЏ', 'episodes', 'episode'];
+            // Candidate spans in the info sections
+            var selectors = [
+                '.full-start__info span',
+                '.full-start-new__info span',
+                '.full-descr__info span'
+            ].join(',');
+            document.querySelectorAll(selectors).forEach(function (span) {
+                var text = (span.textContent || '').trim();
                 if (!text) return;
-                if (text.indexOf(',') !== -1) {
-                    text.split(',').forEach(function (part) {
-                        var trimmed = part.trim();
-                        if (trimmed && genreList.indexOf(trimmed) === -1) genreList.push(trimmed);
-                    });
-                } else if (genreList.indexOf(text) === -1) {
-                    genreList.push(text);
+                var lower = text.toLowerCase();
+                var remove = false;
+                // Remove lines beginning with вЂњqualityвЂќ (localized, English or Russian)
+                if ((qKey && lower.startsWith(qKey)) || lower.startsWith('quality') || lower.startsWith('РєР°С‡РµСЃС‚РІРѕ')) {
+                    remove = true;
+                }
+                // Remove season/episode counters
+                seasonPrefixes.forEach(function (p) {
+                    if (lower.startsWith(p)) remove = true;
+                });
+                episodePrefixes.forEach(function (p) {
+                    if (lower.startsWith(p)) remove = true;
+                });
+                // Remove explicit quality tokens
+                if (isQualityText(text)) {
+                    remove = true;
+                }
+                if (remove) {
+                    // Remove any bullet separator immediately preceding this span
+                    var prev = span.previousSibling;
+                    // Skip whitespace
+                    while (prev && prev.nodeType === Node.TEXT_NODE && prev.textContent.trim() === '') {
+                        prev = prev.previousSibling;
+                    }
+                    // Remove bullet characters (вЂў, В· or .) if present
+                    if (prev && prev.nodeType === Node.TEXT_NODE) {
+                        var ptxt = prev.textContent.trim();
+                        if (ptxt === 'вЂў' || ptxt === 'В·' || ptxt === '.') {
+                            prev.remove();
+                        }
+                    } else if (prev && prev.nodeType === Node.ELEMENT_NODE) {
+                        var etxt = (prev.textContent || '').trim();
+                        if (etxt === 'вЂў' || etxt === 'В·' || etxt === '.') {
+                            prev.remove();
+                        }
+                    }
+                    span.remove();
                 }
             });
+        } catch (err) {
+            // Ignore errors
         }
+    }
 
-        // 4. Iterate over spans and apply styling.  When multiple genres
-        //    appear in one span separated by commas, wrap each in its
-        //    own badge.  Only style spans whose text matches our genre
-        //    list to avoid altering nonвЂ‘genre details like year or
-        //    ratings.
-        $details.find('span').each(function () {
-            var $span = window.$(this);
-            var text = $span.text().trim();
+    /**
+     * Apply a semiвЂ‘transparent background to genre and tag elements.
+     */
+    function styleGenres() {
+        // Inject style if not yet present
+        if (!document.getElementById('hide-quality-genre-style')) {
+            var styleEl = document.createElement('style');
+            styleEl.id = 'hide-quality-genre-style';
+            styleEl.textContent = [
+                '.genre-badge {',
+                '  background: rgba(0, 0, 0, 0.4);',
+                '  padding: 0.2em 0.5em;',
+                '  border-radius: 0.3em;',
+                '  color: #fff;',
+                '  margin-right: 0.3em;',
+                '  display: inline-block;',
+                '  font-size: 0.95em;',
+                '}',
+                '.full-descr__tags .tag-count {',
+                '  background: rgba(0, 0, 0, 0.4);',
+                '  border-radius: 0.3em;',
+                '  padding: 0.2em 0.5em;',
+                '  color: #fff;',
+                '}',
+            ].join('\n');
+            document.head.appendChild(styleEl);
+        }
+        // Assign the class to likely genre spans (commaвЂ‘ or pipeвЂ‘separated lists without colons or digits)
+        var infoSpans = document.querySelectorAll(
+            '.full-start__info span, .full-start-new__info span, .full-descr__info span'
+        );
+        infoSpans.forEach(function (span) {
+            var text = (span.textContent || '').trim();
             if (!text) return;
-            if (text.indexOf(',') !== -1) {
-                var parts = text.split(',');
-                var $wrapper = window.$('<span></span>').css({
-                    'display': 'flex',
-                    'flex-wrap': 'wrap',
-                    'gap': '0.2em'
-                });
-                parts.forEach(function (part) {
-                    var trimmed = part.trim();
-                    if (!trimmed) return;
-                    var $badge = window.$('<span></span>').text(trimmed);
-                    applyGenreStyle($badge);
-                    $wrapper.append($badge);
-                });
-                $span.replaceWith($wrapper);
-            } else {
-                // Only style if the span text is recognised as a genre
-                // either via the movie object or by simple heuristics
-                var isGenre = false;
-                if (genreList.indexOf(text) !== -1) {
-                    isGenre = true;
-                } else {
-                    // Heuristic: treat as genre if it starts with a
-                    // Latin or Cyrillic letter and contains no digits.
-                    // Avoid using Unicode property escapes for wider
-                    // compatibility with older JavaScript engines.
-                    if (/^[A-Za-z\u0400-\u04FF][^\d]*$/.test(text)) {
-                        isGenre = true;
-                    }
-                }
-                if (isGenre) {
-                    applyGenreStyle($span);
-                }
+            if (text.indexOf(':') !== -1) return;
+            if (/\d/.test(text)) return;
+            if (text.indexOf(',') !== -1 || text.indexOf('|') !== -1) {
+                span.classList.add('genre-badge');
             }
+        });
+        // Assign the class to tag counters
+        document.querySelectorAll('.full-descr__tags .tag-count').forEach(function (el) {
+            el.classList.add('genre-badge');
         });
     }
 
     /**
-     * Initialise the plugin: hide quality tags, then hook into
-     * LampaвЂ™s `full` event to style genres on detail pages.  A
-     * MutationObserver hides any dynamically inserted quality tags.
+     * Handler for the `full` event.
+     * @param {Object} event
      */
-    function init() {
-        injectHideQualityStyle();
-        // Hide existing quality and time badges immediately
-        window.$('.card__quality, .card__time').hide();
-        // Listen for detail pages being built
-        Lampa.Listener.follow('full', function (e) {
-            if (!e || e.type !== 'complite' || !e.data || !e.data.movie) return;
-            var movie = e.data.movie;
-            var $root = window.$(e.object.activity.render());
-            var $details = $root.find(
-                '.full-start-new__details, .full-start__details, .full-start-new__info, .full-start__info'
-            );
-            if (!$details.length) {
-                // Fallback: some templates attach details to the title
-                $details = $root.find('.full-start-new__title, .full-start__title').parent();
-                if (!$details.length) $details = $root;
-            }
-            styleGenres($details, movie);
-        });
-        // Observe DOM mutations to hide newly added quality badges
-        var observer = new MutationObserver(function (mutations) {
-            mutations.forEach(function (mutation) {
-                Array.prototype.forEach.call(mutation.addedNodes, function (node) {
-                    if (!node || node.nodeType !== 1) return;
-                    var $node = window.$(node);
-                    if ($node.hasClass('card__quality') || $node.hasClass('card__time')) {
-                        $node.hide();
-                    }
-                    $node.find('.card__quality, .card__time').hide();
-                });
-            });
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
+    function onFull(event) {
+        if (event && event.type === 'complite') {
+            setTimeout(function () {
+                removeQualityInfo();
+                styleGenres();
+            }, 200);
+        }
     }
 
-    // Run initialisation once the DOM and Lampa are ready.  We wait
-    // briefly because Lampa often finishes bootstrapping a little after
-    // DOMContentLoaded.
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        setTimeout(init, 500);
-    } else {
-        document.addEventListener('DOMContentLoaded', function () {
-            setTimeout(init, 500);
-        });
+    // Register listener
+    if (Lampa.Listener && typeof Lampa.Listener.follow === 'function') {
+        Lampa.Listener.follow('full', onFull);
+    }
+
+    // Register plugin metadata
+    try {
+        if (Lampa.Plugin && typeof Lampa.Plugin.create === 'function') {
+            Lampa.Plugin.create({
+                name: 'Hide Quality & Style Genres',
+                version: '1.1.0',
+                description: 'Removes quality, season and episode info on detail cards and styles genre tags.',
+                type: 'card',
+                icon: '\uD83D\uDD2D'
+            });
+        }
+    } catch (e) {
+        // Ignore registration errors
     }
 })();
+
 
