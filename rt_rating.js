@@ -1,288 +1,292 @@
-/*
- * Rotten Tomatoes Ratings MDBList for Lampa
- *
- * Этот плагин добавляет в карточки фильмов/сериалов две оценки Rotten Tomatoes
- * (критики и зрители). В первую очередь он пытается получить данные
- * через сервис MDBList (необходим API‑ключ), потому что покрытие там
- * заметно лучше, чем в OMDb. При отсутствии ключа или данных
- * происходит автоматический откат на OMDb.
- *
- * Вместо размытых изображений используются оригинальные SVG‑иконки
- * из psahx/ps_plug. Они подгружаются напрямую и хорошо масштабируются.
- * Для маленьких экранов применяются CSS‑медиазапросы, уменьшающие
- * размер иконок и шрифта.
- */
-
 (function () {
     'use strict';
-    if (!window.Lampa) return;
-    if (window.rtMdbPluginInjected) return;
-    window.rtMdbPluginInjected = true;
 
-    // --- Ключи API ---
-    // Ключ OMDb (фиксированный для резервного канала)
-    var omdbKey = '61b9a558';
-    // Ключ MDBList. Чтобы плагин работал через MDBList, получите свой
-    // ключ на сайте mdblist.com и вставьте его сюда. Оставьте пустой,
-    // чтобы использовать только OMDb.
-    // API ключ для MDBList. Этот ключ используется для получения рейтингов
-    // Rotten Tomatoes через сервис mdblist.com. Вы можете заменить его
-    // на свой, если понадобится. Текущий ключ предоставлен пользователем.
-    var mdblistKey = 'hx4fegxixdzg8yj9v8xu2agyj';
+    // Полифилл для старых браузеров
+    if (!String.prototype.startsWith) {
+        String.prototype.startsWith = function(searchString, position) {
+            position = position || 0;
+            return this.indexOf(searchString, position) === position;
+        };
+    }
 
-    // RapidAPI ключ для дополнительных данных. Предоставлен пользователем.
-    // Этот ключ будет использоваться для вызова API "Movie Database Alternative" на RapidAPI,
-    // который иногда возвращает рейтинги Rotten Tomatoes.
-    var rapidApiKey = '992919a059msh2688f45058d5a3bp178661jsne0525affdede';
-    var rapidApiHost = 'movie-database-alternative.p.rapidapi.com';
+    // Локализация (ru, en, uk)
+    Lampa.Lang.add({
+        ui_tweaks_plugin_name: {
+            ru: 'UI Твики',
+            en: 'UI Tweaks',
+            uk: 'UI Твіки'
+        },
+        ui_tweaks_hide_quality: {
+            ru: 'Скрывать качество',
+            en: 'Hide quality',
+            uk: 'Приховувати якість'
+        },
+        ui_tweaks_hide_quality_desc: {
+            ru: 'Скрывать индикаторы качества в карточках',
+            en: 'Hide quality indicators in cards',
+            uk: 'Приховувати індикатори якості в картках'
+        },
+        ui_tweaks_genres_backdrop: {
+            ru: 'Фон под жанрами',
+            en: 'Backdrop for genres',
+            uk: 'Фон під жанрами'
+        },
+        ui_tweaks_genres_backdrop_desc: {
+            ru: 'Добавлять полупрозрачный фон под жанрами',
+            en: 'Add semi-transparent backdrop under genres',
+            uk: 'Додавати напівпрозорий фон під жанрами'
+        },
+        ui_tweaks_hide_comments: {
+            ru: 'Скрывать комментарии',
+            en: 'Hide comments',
+            uk: 'Приховувати коментарі'
+        },
+        ui_tweaks_hide_comments_desc: {
+            ru: 'Удалять блок комментариев и вкладки',
+            en: 'Remove comments block and tabs',
+            uk: 'Видаляти блок коментарів та вкладки'
+        }
+    });
 
-    // --- Ссылки на SVG‑иконки Rotten Tomatoes от psahx ---
-    var ICONS = {
-        criticsFresh: 'https://psahx.github.io/ps_plug/Rotten_Tomatoes.svg',
-        criticsRotten: 'https://psahx.github.io/ps_plug/Rotten_Tomatoes_rotten.svg',
-        audienceFresh: 'https://psahx.github.io/ps_plug/Rotten_Tomatoes_positive_audience.svg',
-        audienceRotten: 'https://psahx.github.io/ps_plug/Rotten_Tomatoes_negative_audience.svg'
+    // Константы
+    var S_QUALITY = '.card [class*="quality"],.card [data-quality],.full [class*="quality"],.full [data-quality],.video [class*="quality"],.video [data-quality]';
+    var S_GENRES = '.full-genres,.details__genres,.film__genres,.full__genres,.card__genres,.tags--genres,.tag-list.genres,.genres,[data-block="genres"]';
+    var S_COMMENTS = '.comments,.full-comments,.panel-comments,.tabs__content.comments,.comments-block,#comments,[data-block="comments"]';
+    var S_TABTITLES = '.tabs__head .tabs__title,.tabs__head .tabs__button,.tabs__title,.tab__title,.tab-button';
+    var BG = 'rgba(0,0,0,0.35)';
+    var RAD = '12px';
+
+    // Настройки по умолчанию
+    var settings = {
+        hide_quality: Lampa.Storage.get('ui_tweaks_hide_quality', true),
+        genres_backdrop: Lampa.Storage.get('ui_tweaks_genres_backdrop', true),
+        hide_comments: Lampa.Storage.get('ui_tweaks_hide_comments', true)
     };
 
-    // Вставляем стили для блока. Используем медиазапрос, чтобы менять
-    // размер текста и иконок на маленьких экранах.
-    if (!document.getElementById('rt-mdb-style')) {
+    // Функция для инъекции CSS
+    function injectCSS(css) {
         var style = document.createElement('style');
-        style.id = 'rt-mdb-style';
-        style.textContent = [
-            '.rt-mdb-block{display:flex;align-items:center;gap:0.6em;margin-top:0.5em;flex-wrap:wrap;}',
-            '.rt-mdb-item{display:flex;align-items:center;font-size:0.95em;background:rgba(0,0,0,0.4);padding:0.2em 0.5em;border-radius:0.3em;color:#fff;}',
-            /* Блок для отрицательного рейтинга (используется одинаковый фон) */
-            '.rt-mdb-item.rt-rotten{background:rgba(0,0,0,0.4);}',
-            '.rt-mdb-item img{width:16px;height:16px;margin-left:0.3em;}',
-            '@media (max-width:600px){',
-            '  .rt-mdb-item{font-size:0.85em;}',
-            '  .rt-mdb-item img{width:14px;height:14px;}',
-            '}',
-            '@media (min-width:1200px){',
-            '  .rt-mdb-item{font-size:1em;}',
-            '  .rt-mdb-item img{width:18px;height:18px;}',
-            '}'
-        ].join('');
-        document.head.appendChild(style);
+        style.textContent = css;
+        style.id = 'ui_tweaks_css';
+        if (document.querySelector('#ui_tweaks_css')) return;
+        (document.head || document.documentElement).appendChild(style);
     }
 
-    /**
-     * Формирует HTML элемента рейтинга. Положительная оценка – ≥60 %,
-     * для негативной добавляется класс rt-rotten.
-     */
-    function buildItem(value, freshIcon, rottenIcon) {
-        // Значение (процент) или тире, если undefined
-        var val = (typeof value === 'number') ? value + '%' : '--';
-        // Выбираем иконку в зависимости от положительной оценки
-        var isPositive = (typeof value === 'number') && value >= 60;
-        var icon = isPositive ? freshIcon : rottenIcon;
-        // Отрицательный рейтинг больше не окрашиваем в зелёный: одинаковый фон для всех
-        return '<span class="rt-mdb-item">' + val + '<img src="' + icon + '" alt="" draggable="false"></span>';
-    }
-
-    /**
-     * Делает запрос к MDBList по IMDb ID. Возвращает объект с
-     * {critics, audience}, или пустой объект если данных нет или нет ключа.
-     */
-    function fetchMdb(imdbId, tmdbId, media) {
-        return new Promise(function (resolve) {
-            if (!mdblistKey) return resolve({});
-            var request = new Lampa.Reguest();
-            var url;
-            var useTmdbEndpoint = false;
-            if (tmdbId) {
-                // use /tmdb/ endpoint for better coverage
-                var typePath = media && media.toLowerCase().startsWith('tv') ? 'show' : 'movie';
-                url = 'https://api.mdblist.com/tmdb/' + typePath + '/' + encodeURIComponent(tmdbId) + '?apikey=' + encodeURIComponent(mdblistKey);
-                useTmdbEndpoint = true;
-            } else if (imdbId) {
-                url = 'https://api.mdblist.com/?i=' + encodeURIComponent(imdbId) + '&apikey=' + encodeURIComponent(mdblistKey);
-            } else {
-                return resolve({});
-            }
-            request.timeout(15000);
-            request.silent(url, function (json) {
-                var crit, aud;
-                if (useTmdbEndpoint && json && Array.isArray(json.ratings)) {
-                    // In /tmdb/ endpoint, ratings are in array of objects {source,value}
-                    json.ratings.forEach(function (rating) {
-                        if (rating.source === 'tomatoes' && typeof rating.value === 'number') {
-                            crit = rating.value;
-                        } else if (rating.source === 'popcorn' && rating.value != null) {
-                            var parsed = parseFloat(rating.value);
-                            if (!isNaN(parsed)) aud = parsed;
-                        }
-                    });
-                } else {
-                    // fallback for legacy endpoint
-                    if (json && typeof json.tomatoes === 'number') crit = json.tomatoes;
-                    if (json && (typeof json.popcorn === 'number' || typeof json.popcorn === 'string')) {
-                        var p = parseFloat(json.popcorn);
-                        if (!isNaN(p)) aud = p;
-                    }
-                }
-                resolve({ critics: crit, audience: aud });
-            }, function () {
-                resolve({});
+    // Скрытие качества
+    function hideQuality() {
+        if (!settings.hide_quality) return;
+        try {
+            document.querySelectorAll(S_QUALITY).forEach(function(el) {
+                var cls = `${el.className || ''} ${el.parentNode ? el.parentNode.className || '' : ''}`;
+                if (/progress|timeline|evolution|meter/i.test(cls)) return;
+                el.style.display = 'none';
+                el.setAttribute('aria-hidden', 'true');
             });
-        });
+        } catch (e) {
+            console.log('UI Tweaks: hideQuality error', e);
+        }
     }
 
-    /**
-     * Парсит ответ OMDb в формате Rotten Tomatoes (резервный канал).
-     */
-    function parseOmdb(json) {
-        var critics, audience;
-        if (json && json.Response !== 'False') {
-            if (json.tomatoMeter && json.tomatoMeter !== 'N/A') {
-                var c = parseInt(json.tomatoMeter, 10);
-                if (!isNaN(c)) critics = c;
-            }
-            if (Array.isArray(json.Ratings)) {
-                json.Ratings.forEach(function (e) {
-                    if (e.Source === 'Rotten Tomatoes' && /\d+%/.test(e.Value)) {
-                        var v = parseInt(e.Value, 10);
-                        if (!isNaN(v)) critics = v;
+    // Скрытие комментариев
+    function removeComments() {
+        if (!settings.hide_comments) return;
+        try {
+            // Скрываем вкладки комментариев
+            document.querySelectorAll(S_TABTITLES).forEach(function(el) {
+                var txt = (el.textContent || '').toLowerCase();
+                if (txt.includes('коммент') || txt.includes('comments')) {
+                    el.style.display = 'none';
+                    el.setAttribute('aria-hidden', 'true');
+                }
+            });
+            // Скрываем блоки комментариев
+            document.querySelectorAll(S_COMMENTS).forEach(function(el) {
+                el.style.display = 'none';
+                el.setAttribute('aria-hidden', 'true');
+            });
+        } catch (e) {
+            console.log('UI Tweaks: removeComments error', e);
+        }
+    }
+
+    // Добавление фона под жанры
+    function backdropGenres() {
+        if (!settings.genres_backdrop) return;
+        try {
+            document.querySelectorAll(S_GENRES).forEach(function(box) {
+                if (!box || !box.parentNode || box.getAttribute('data-ui-bg') === '1') return;
+                box.setAttribute('data-ui-bg', '1');
+                var cs = window.getComputedStyle(box);
+                var pos = `${box.style.position || ''} ${cs.position}`;
+                if (!/relative|absolute|fixed/i.test(pos)) box.style.position = 'relative';
+                if (!box.classList.contains('ui-genre-wrap')) box.classList.add('ui-genre-wrap');
+                var bg = document.createElement('div');
+                bg.className = 'ui-genre-bg';
+                Object.assign(bg.style, {
+                    position: 'absolute',
+                    left: '0',
+                    top: '0',
+                    right: '0',
+                    bottom: '0',
+                    pointerEvents: 'none',
+                    background: BG,
+                    borderRadius: RAD,
+                    zIndex: '0'
+                });
+                box.appendChild(bg);
+                Array.from(box.children).forEach(function(child) {
+                    if (child !== bg && child.style) {
+                        if (!child.style.position) child.style.position = 'relative';
+                        child.style.zIndex = '1';
                     }
                 });
-            }
-            if (json.tomatoUserMeter && json.tomatoUserMeter !== 'N/A') {
-                var a = parseInt(json.tomatoUserMeter, 10);
-                if (!isNaN(a)) audience = a;
-            }
-            if (audience === undefined && json.tomatoUserRating && json.tomatoUserRating !== 'N/A') {
-                var num = parseFloat(json.tomatoUserRating);
-                if (!isNaN(num)) audience = num <= 10 ? Math.round(num * 10) : Math.round(num);
-            }
-        }
-        return { critics: critics, audience: audience };
-    }
-
-    /**
-     * Делает запрос к OMDb по IMDb ID.
-     */
-    function fetchOmdbByImdb(imdbId) {
-        return new Promise(function (resolve) {
-            if (!imdbId || !omdbKey) return resolve({});
-            var request = new Lampa.Reguest();
-            var url = 'https://www.omdbapi.com/?apikey=' + encodeURIComponent(omdbKey) + '&i=' + encodeURIComponent(imdbId) + '&tomatoes=true';
-            request.timeout(20000);
-            request.silent(url, function (json) {
-                resolve(parseOmdb(json));
-            }, function () { resolve({}); });
-        });
-    }
-
-    /**
-     * Делает запрос к OMDb по названию и году. Используется, когда нет IMDb ID.
-     */
-    function fetchOmdbByTitle(title, year) {
-        return new Promise(function (resolve) {
-            if (!title || !omdbKey) return resolve({});
-            var request = new Lampa.Reguest();
-            var url = 'https://www.omdbapi.com/?apikey=' + encodeURIComponent(omdbKey) + '&t=' + encodeURIComponent(title);
-            if (year) url += '&y=' + encodeURIComponent(year);
-            url += '&tomatoes=true';
-            request.timeout(20000);
-            request.silent(url, function (json) {
-                resolve(parseOmdb(json));
-            }, function () { resolve({}); });
-        });
-    }
-
-    /**
-     * Делает запрос к API "Movie Database Alternative" на RapidAPI по IMDb ID.
-     * Возвращает объект с {critics, audience}, где critics — процент
-     * Rotten Tomatoes из массива Ratings. Audience чаще всего отсутствует и
-     * будет undefined. Если запрос не удался, возвращает пустой объект.
-     */
-    function fetchRapidByImdb(imdbId) {
-        return new Promise(function (resolve) {
-            if (!imdbId || !rapidApiKey) return resolve({});
-            var request = new Lampa.Reguest();
-            // API Movie Database Alternative использует те же параметры, что и OMDb: i и r=json
-            var url = 'https://' + rapidApiHost + '/?i=' + encodeURIComponent(imdbId) + '&r=json';
-            // Формируем заголовки RapidAPI
-            var headers = {
-                'X-RapidAPI-Key': rapidApiKey,
-                'X-RapidAPI-Host': rapidApiHost
-            };
-            request.timeout(20000);
-            request.silent(url, function (json) {
-                var critics;
-                if (json && Array.isArray(json.Ratings)) {
-                    json.Ratings.forEach(function (e) {
-                        if (e.Source === 'Rotten Tomatoes' && /\d+%/.test(e.Value)) {
-                            var v = parseInt(e.Value, 10);
-                            if (!isNaN(v)) critics = v;
-                        }
-                    });
-                }
-                resolve({ critics: critics });
-            }, function () {
-                resolve({});
-            }, false, { headers: headers });
-        });
-    }
-
-    /**
-     * Получает рейтинги Rotten Tomatoes для указанного фильма: сначала
-     * через MDBList (если есть ключ), затем резервно через OMDb.
-     */
-    function getRatings(movie) {
-        return new Promise(function (resolve) {
-            if (!movie) return resolve({});
-            var imdbId = movie.imdb_id || movie.imdb || (movie.ids && movie.ids.imdb) || '';
-            if (imdbId && typeof imdbId === 'number') imdbId = 'tt' + imdbId;
-            var date = movie.release_date || movie.first_air_date || movie.last_air_date || movie.year || '';
-            var yearMatch = ('' + date).match(/\d{4}/);
-            var year = yearMatch ? yearMatch[0] : '';
-            var title = movie.original_title || movie.title || movie.original_name || movie.name;
-            // Сначала пробуем MDBList
-            var tmdbId = movie.id || movie.tmdb_id || '';
-            var mediaType = movie.media_type || (movie.number_of_seasons || movie.episode_run_time ? 'tv' : 'movie');
-            fetchMdb(imdbId, tmdbId, mediaType).then(function (res) {
-                if (res && (typeof res.critics === 'number' || typeof res.audience === 'number')) {
-                    return resolve(res);
-                }
-                // Попробуем RapidAPI по IMDb ID
-                fetchRapidByImdb(imdbId).then(function (resRapid) {
-                    if (resRapid && typeof resRapid.critics === 'number') {
-                        return resolve(resRapid);
-                    }
-                    // Затем OMDb по IMDb ID и по названию
-                    fetchOmdbByImdb(imdbId).then(function (res2) {
-                        if (res2 && (typeof res2.critics === 'number' || typeof res2.audience === 'number')) {
-                            return resolve(res2);
-                        }
-                        fetchOmdbByTitle(title, year).then(resolve);
-                    });
-                });
             });
+        } catch (e) {
+            console.log('UI Tweaks: backdropGenres error', e);
+        }
+    }
+
+    // Обновление всех твиков
+    function refreshTweaks() {
+        hideQuality();
+        removeComments();
+        backdropGenres();
+    }
+
+    // Настройка наблюдателя DOM
+    function setupObserver() {
+        var observer = new MutationObserver(function() {
+            setTimeout(refreshTweaks, 100);
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    // Добавление настроек в интерфейс
+    function addSettings() {
+        Lampa.SettingsApi.addComponent({
+            component: 'ui_tweaks',
+            name: Lampa.Lang.translate('ui_tweaks_plugin_name'),
+            icon: '<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 5C4 4.44772 4.44772 4 5 4H19C19.5523 4 20 4.44772 20 5V7C20 7.55228 19.5523 8 19 8H5C4.44772 8 4 7.55228 4 7V5Z" fill="currentColor"/><path d="M4 11C4 10.4477 4.44772 10 5 10H19C19.5523 10 20 10.4477 20 11V13C20 13.5523 19.5523 14 19 14H5C4.44772 14 4 13.5523 4 13V11Z" fill="currentColor"/><path d="M4 17C4 16.4477 4.44772 16 5 16H19C19.5523 16 20 16.4477 20 17V19C20 19.5523 19.5523 20 19 20H5C4.44772 20 4 19.5523 4 19V17Z" fill="currentColor"/></svg>'
+        });
+
+        // Перемещаем пункт "UI Твики" после "Интерфейс"
+        function moveTweaksSettingsFolder() {
+            var $folders = $('.settings-folder');
+            var $interface = $folders.filter(function() {
+                return $(this).data('component') === 'interface';
+            });
+            var $tweaks = $folders.filter(function() {
+                return $(this).data('component') === 'ui_tweaks';
+            });
+            if ($interface.length && $tweaks.length && $tweaks.prev()[0] !== $interface[0]) {
+                $tweaks.insertAfter($interface);
+            }
+        }
+        setTimeout(moveTweaksSettingsFolder, 100);
+
+        // Добавляем параметры
+        Lampa.SettingsApi.addParam({
+            component: 'ui_tweaks',
+            param: {
+                name: 'ui_tweaks_hide_quality',
+                type: 'trigger',
+                default: true
+            },
+            field: {
+                name: Lampa.Lang.translate('ui_tweaks_hide_quality'),
+                description: Lampa.Lang.translate('ui_tweaks_hide_quality_desc')
+            },
+            onChange: function (value) {
+                settings.hide_quality = value;
+                Lampa.Storage.set('ui_tweaks_hide_quality', value);
+                Lampa.Settings.update();
+                refreshTweaks();
+            }
+        });
+
+        Lampa.SettingsApi.addParam({
+            component: 'ui_tweaks',
+            param: {
+                name: 'ui_tweaks_genres_backdrop',
+                type: 'trigger',
+                default: true
+            },
+            field: {
+                name: Lampa.Lang.translate('ui_tweaks_genres_backdrop'),
+                description: Lampa.Lang.translate('ui_tweaks_genres_backdrop_desc')
+            },
+            onChange: function (value) {
+                settings.genres_backdrop = value;
+                Lampa.Storage.set('ui_tweaks_genres_backdrop', value);
+                Lampa.Settings.update();
+                refreshTweaks();
+            }
+        });
+
+        Lampa.SettingsApi.addParam({
+            component: 'ui_tweaks',
+            param: {
+                name: 'ui_tweaks_hide_comments',
+                type: 'trigger',
+                default: true
+            },
+            field: {
+                name: Lampa.Lang.translate('ui_tweaks_hide_comments'),
+                description: Lampa.Lang.translate('ui_tweaks_hide_comments_desc')
+            },
+            onChange: function (value) {
+                settings.hide_comments = value;
+                Lampa.Storage.set('ui_tweaks_hide_comments', value);
+                Lampa.Settings.update();
+                refreshTweaks();
+            }
         });
     }
 
-    // Обработчик события завершения построения карточки
-    Lampa.Listener.follow('full', function (e) {
-        if (e.type !== 'complite' || !e.data || !e.data.movie) return;
-        var movie = e.data.movie;
-        var renderRoot = $(e.object.activity.render());
-        var details = renderRoot.find('.full-start-new__details, .full-start__details, .full-start-new__info, .full-start__info');
-        if (!details.length) {
-            details = renderRoot.find('.full-start-new__title, .full-start__title').parent();
-            if (!details.length) details = renderRoot;
+    // Инициализация CSS
+    function initCSS() {
+        injectCSS(`
+            ${S_QUALITY} { display: none !important; }
+            ${S_COMMENTS} { display: none !important; }
+            .ui-genre-wrap { position: relative !important; }
+            .ui-genre-bg { position: absolute; left: 0; top: 0; right: 0; bottom: 0; pointer-events: none; border-radius: ${RAD}; background: ${BG}; z-index: 0; }
+            .ui-genre-wrap > *:not(.ui-genre-bg) { position: relative; z-index: 1; }
+            .ui-genre-wrap, .ui-genre-wrap ul, .ui-genre-wrap li { list-style: none !important; padding-left: 0 !important; margin-left: 0 !important; }
+            .ui-genre-wrap a::before, .ui-genre-wrap span::before, .ui-genre-wrap li::before { content: none !important; }
+        `);
+    }
+
+    // Слушатель для полной карточки
+    Lampa.Listener.follow('full', function (data) {
+        if (data.type === 'complite') {
+            setTimeout(refreshTweaks, 100);
         }
-        getRatings(movie).then(function (rt) {
-            rt = rt || {};
-            var crit = (typeof rt.critics === 'number') ? rt.critics : undefined;
-            var aud  = (typeof rt.audience === 'number') ? rt.audience : undefined;
-            var html = '<div class="rt-mdb-block">' +
-                buildItem(crit, ICONS.criticsFresh, ICONS.criticsRotten) +
-                buildItem(aud, ICONS.audienceFresh, ICONS.audienceRotten) +
-                '</div>';
-            details.find('.rt-mdb-block').remove();
-            details.append(html);
-        });
     });
+
+    // Инициализация плагина
+    function startPlugin() {
+        addSettings();
+        initCSS();
+        setupObserver();
+        refreshTweaks();
+
+        // Регистрация плагина в манифесте
+        Lampa.Manifest.plugins = {
+            name: 'UI Твики',
+            version: '1.0.0',
+            description: 'Скрытие качества, комментариев и добавление фона под жанрами'
+        };
+
+        window.ui_tweaks = { settings: settings, refresh: refreshTweaks };
+    }
+
+    if (window.appready) {
+        startPlugin();
+    } else {
+        Lampa.Listener.follow('app', function (event) {
+            if (event.type === 'ready') {
+                startPlugin();
+            }
+        });
+    }
 })();
