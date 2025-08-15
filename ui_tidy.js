@@ -1,157 +1,470 @@
-(function () {
+(function(){
   'use strict';
-  if (!window.Lampa || window.uiTidyJQInjected) return;
-  window.uiTidyJQInjected = true;
+  /*
+   * Lampa UI Tweaks — Quality / Genres Backdrop / Remove Comments
+   * Version: 1.2.0 (2025-08-15)
+   * Goal:
+   *   1) Hide quality badges/labels everywhere it matters (cards, full pages, video blocks)
+   *   2) Add a translucent backdrop under the genre tags (как в rt_rating.js идея «подложки»)
+   *   3) Hide/disable the Comments tab & block on movie/series cards
+   *
+   * Design notes:
+   *   - 100% ES5 for WebOS/Tizen compatibility (no arrow functions / optional chaining / let/const)
+   *   - Defensive DOM work + MutationObserver (throttled) because Lampa rebuilds views on navigation
+   *   - Minimal footprint, avoids layout shifts (“уехавшая вёрстка”) and stray bullets/markers (“точка слева”)
+   */
 
-  // ====== переключатели (оставил гибко) ======
-  var HIDE_QUALITY    = false;  // если нужно — поставьте true
-  var HIDE_COMMENTS   = false;  // если нужно — поставьте true
+  var DEBUG = false; // set true for console logs
 
-  // ====== стили только для наших «пилюль» ======
-  (function injectCSS(){
-    var id = 'ui-tidy-jq-style';
-    if (document.getElementById(id)) return;
-    var css = document.createElement('style');
-    css.id = id;
-    css.textContent = [
-      '.ui-genre-pill{display:inline-flex;align-items:center;background:rgba(0,0,0,.4);',
-      '  padding:.22em .55em;border-radius:.4em;line-height:1;font-size:1em;',
-      '  margin-right:.45em;margin-top:.25em;white-space:nowrap}',
-      '@media (max-width:600px){.ui-genre-pill{font-size:.92em}}',
-      '@media (min-width:1200px){.ui-genre-pill{font-size:1.08em}}',
-      HIDE_QUALITY ? '.full-start__quality, .full-start-new__quality, .badge-quality{display:none!important}' : '',
-      HIDE_COMMENTS ? '.full-start__comments, .full-start-new__comments, .comments, .comments--container, #comments{display:none!important}' : ''
-    ].join('');
-    document.head.appendChild(css);
-  })();
+  var CONFIG = {
+    selectors: {
+      // Containers where genres usually live in different Lampa skins
+      genreContainers: [
+        '.full-genres',
+        '.details__genres',
+        '.film__genres',
+        '.full__genres',
+        '.card__genres',
+        '.tags--genres',
+        '.tag-list.genres',
+        '.genres',
+        '[data-block="genres"]'
+      ].join(','),
 
-  // ====== справочник жанров ======
-  var GENRES = new Set([
-    'боевик','комедия','драма','триллер','ужасы','фантастика','фэнтези','криминал','приключения',
-    'мелодрама','семейный','анимация','мультфильм','военный','история','мюзикл','биография',
-    'документальный','спорт','вестерн','детектив','реалити','научный','ток-шоу',
-    'action','comedy','drama','thriller','horror','sci-fi','science fiction','fantasy','crime',
-    'adventure','family','animation','war','history','musical','biography','documentary',
-    'sport','western','mystery','reality','talk show'
-  ]);
-  function norm(s){ return (s||'').toLowerCase().replace(/\s+/g,' ').trim(); }
-  function splitParts(t){ return t.split(/,|•|·/).map(function(p){return p.trim();}).filter(Boolean); }
+      // Known comments areas & tab content
+      commentsBlocks: [
+        '.comments',
+        '.full-comments',
+        '.panel-comments',
+        '.tabs__content.comments',
+        '.comments-block',
+        '#comments',
+        '[data-block="comments"]'
+      ].join(','),
 
-  // ====== где жить жанрам ======
-  function findDetails($root){
-    var $d = $root.find('.new-interface-info__details, .full-start-new__details, .full-start__details, .full-start-new__info, .full-start__info').eq(0);
-    if ($d.length) return $d;
-    var $ttl = $root.find('.full-start-new__title, .full-start__title').eq(0);
-    return $ttl.length ? $ttl.parent() : $root;
+      // Tab titles (we'll hide the one that says Комментарии/Comments)
+      commentsTabTitles: '.tabs__head .tabs__title, .tabs__head .tabs__button, .tabs__title',
+
+      // Quality badges/labels inside common contexts
+      qualityWithin: [
+        '.card [class*="quality"], .card [data-quality]',
+        '.full [class*="quality"], .full [data-quality]',
+        '.video [class*="quality"], .video [data-quality]'
+      ].join(',')
+    },
+
+    // Visual style of the backdrop under genres
+    genreBackdrop: {
+      background: 'rgba(0,0,0,0.35)',
+      borderRadius: '12px'
+    }
+  };
+
+  function log(){
+    if(!DEBUG) return;
+    try{ console.log.apply(console, ['[Lampa UI Tweaks]'].concat([].slice.call(arguments))); }catch(e){}
   }
 
-  // ====== превращаем только жанры в «пилюли» ======
-  function pillify($details){
-    if (!$details || !$details.length) return;
+  function injectCSS(css){
+    try{
+      var style = document.createElement('style');
+      style.type = 'text/css';
+      style.appendChild(document.createTextNode(css));
+      document.head.appendChild(style);
+    }catch(e){ log('injectCSS error', e); }
+  }
 
-    // кандидаты: ссылки/бейджи/спаны в деталях
-    var $nodes = $details.find('a, span, .tag, .badge');
-
-    $nodes.each(function(){
-      var $el = Lampa.$(this);
-      if ($el.hasClass('ui-genre-pill')) return;
-
-      var text = ($el.text()||'').trim();
-      if (!text) return;
-
-      // пропускаем разделители и короткие служебные куски
-      if (text.length <= 2 && /[•·,]/.test(text)) return;
-      if (/^\d{1,4}$/.test(text)) return;               // 1999 / 18+
-      if (/(^|\\s)(мин|ч)\\s*$/i.test(text)) return;    // «мин», «ч»
-
-      var lower = norm(text);
-
-      // одиночный жанр
-      if (GENRES.has(lower)) {
-        $el.addClass('ui-genre-pill');
-        return;
+  // === 1) Hide quality badges (CSS + JS pass for stubborn nodes) ===
+  function hideQualityBadges(){
+    try{
+      var nodes = document.querySelectorAll(CONFIG.selectors.qualityWithin);
+      for(var i=0;i<nodes.length;i++){
+        var el = nodes[i];
+        // Avoid false-positives like progress/timeline widgets just in case
+        var cls = (el.className||'') + ' ' + (el.parentNode&&el.parentNode.className||'');
+        if(/progress|timeline|evolution|meter/i.test(cls)) continue;
+        el.style.setProperty('display','none','important');
+        el.setAttribute('aria-hidden','true');
       }
+    }catch(e){ log('hideQualityBadges error', e); }
+  }
 
-      // список жанров в одном узле — аккуратно раскладываем
-      if (/,|•|·/.test(text)) {
-        var parts = splitParts(text);
-        if (!parts.length) return;
-
-        var matches = parts.reduce(function(a,p){ return a + (GENRES.has(norm(p)) ? 1 : 0); }, 0);
-        if (matches >= Math.max(1, Math.floor(parts.length*0.6))) {
-          var frag = document.createDocumentFragment();
-          parts.forEach(function(p){
-            var span = document.createElement('span');
-            span.className = 'ui-genre-pill';
-            span.textContent = p;
-            frag.appendChild(span);
-          });
-          $el.replaceWith(frag);
+  // === 2) Remove/hide Comments tab and content ===
+  function removeComments(){
+    try{
+      // Hide tab titles that match text
+      var titles = document.querySelectorAll(CONFIG.selectors.commentsTabTitles);
+      for(var i=0;i<titles.length;i++){
+        var t = titles[i];
+        var txt = (t.textContent||'').toLowerCase();
+        if(txt.indexOf('коммент') !== -1 || txt.indexOf('comments') !== -1){
+          t.style.setProperty('display','none','important');
+          t.setAttribute('aria-hidden','true');
         }
       }
-    });
-  }
-
-  // ====== мягко скрываем вкладку «Комментарии» по заголовку ======
-  function hideCommentsTab($root){
-    if (!HIDE_COMMENTS) return;
-    try{
-      var $tabs = $root.find('.tabs, .full-start__tabs, .full-start-new__tabs').eq(0);
-      if (!$tabs.length) return;
-      var $heads = $tabs.find('.tabs__head .selector, .tabs__head *[class*="selector"]');
-      var idx = -1;
-      $heads.each(function(i){
-        var t = Lampa.$(this).text().trim().toLowerCase();
-        if (/коммент/i.test(t) || /comments?/i.test(t)) idx = i;
-      });
-      if (idx >= 0){
-        $heads.eq(idx).hide();
-        var $bods = $tabs.find('.tabs__body > *');
-        if ($bods.eq(idx).length) $bods.eq(idx).hide();
+      // Hide known blocks
+      var blocks = document.querySelectorAll(CONFIG.selectors.commentsBlocks);
+      for(var j=0;j<blocks.length;j++){
+        var b = blocks[j];
+        b.style.setProperty('display','none','important');
+        b.setAttribute('aria-hidden','true');
       }
-    }catch(_){}
+    }catch(e){ log('removeComments error', e); }
   }
 
-  // ====== мягко убираем «качество» в деталях (inline-текст) ======
-  var QUALITY_RX = /(4k|uhd|2160p|1080p|720p|hdrip|web[.\\-\\s]?dl|webrip|b[dr]rip|blu[-\\s]?ray|dvdrip|camrip|ts|hdtv|sd|hd|fullhd)/i;
-  function hideQualityInline($details){
-    if (!HIDE_QUALITY || !$details || !$details.length) return;
-    $details.find('span, a, b, i, div').each(function(){
-      var $n = Lampa.$(this);
-      var t = ($n.text()||'').trim();
-      if (t && QUALITY_RX.test(t)) $n.hide();
-    });
+  // === 3) Add translucent backdrop under genres (safe, no layout shifts) ===
+  function addGenreBackdrop(){
+    try{
+      var containers = document.querySelectorAll(CONFIG.selectors.genreContainers);
+      for(var i=0;i<containers.length;i++){
+        var box = containers[i];
+        if(!box || !box.parentNode) continue;
+
+        // Mark processed containers to avoid duplicates
+        if(box.getAttribute('data-ui-bg') === '1') continue;
+        box.setAttribute('data-ui-bg','1');
+
+        // Ensure container is a proper stacking context for the overlay
+        var cs = window.getComputedStyle(box);
+        var pos = (box.style.position||'') + ' ' + cs.position;
+        if(!/relative|absolute|fixed/i.test(pos)) box.style.position = 'relative';
+
+        // Add a scoping class for CSS resets (bullets, ::before)
+        if((' ' + box.className + ' ').indexOf(' ui-genre-wrap ') === -1){
+          box.className += (box.className ? ' ' : '') + 'ui-genre-wrap';
+        }
+
+        // Create overlay layer
+        var bg = document.createElement('div');
+        bg.className = 'ui-genre-bg';
+        bg.style.position = 'absolute';
+        bg.style.left = '0';
+        bg.style.top = '0';
+        bg.style.right = '0';
+        bg.style.bottom = '0';
+        bg.style.pointerEvents = 'none';
+        bg.style.background = CONFIG.genreBackdrop.background;
+        bg.style.borderRadius = CONFIG.genreBackdrop.borderRadius;
+        bg.style.zIndex = '0';
+
+        // Insert as last child so it spans the container without affecting flow
+        box.appendChild(bg);
+
+        // Raise actual genre tags above the overlay
+        var kids = box.children;
+        for(var k=0;k<kids.length;k++){
+          var child = kids[k];
+          if(child === bg) continue;
+          if(!child.style) continue;
+          child.style.position = child.style.position || 'relative';
+          child.style.zIndex = '1';
+        }
+      }
+    }catch(e){ log('addGenreBackdrop error', e); }
   }
 
-  // ====== основная точка входа ======
-  Lampa.Listener.follow('full', function(e){
-    if (e.type !== 'complite' || !e.object || !e.object.activity) return;
+  // === Observer (throttled) ===
+  var mo = null;
+  var refreshTimer = 0;
+  function scheduleRefresh(){
+    if(refreshTimer) return;
+    refreshTimer = setTimeout(function(){
+      refreshTimer = 0;
+      try{
+        hideQualityBadges();
+        removeComments();
+        addGenreBackdrop();
+      }catch(e){ log('refresh error', e); }
+    }, 60); // throttle bursts of mutations
+  }
 
-    try {
-      var $root = Lampa.$(e.object.activity.render());
-      if (!$root || !$root.length) return;
+  function observe(){
+    try{
+      if(mo) mo.disconnect();
+      mo = new MutationObserver(function(){ scheduleRefresh(); });
+      mo.observe(document.body, {childList:true, subtree:true});
+    }catch(e){ log('observe error', e); }
+  }
 
-      var $details = findDetails($root);
-      // первый проход
-      pillify($details);
-      hideCommentsTab($root);
-      hideQualityInline($details);
+  // === DOM Ready helper ===
+  function ready(fn){
+    if(document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(fn,0);
+    else document.addEventListener('DOMContentLoaded', fn);
+  }
 
-      // резервный проход (когда Lampa дорисовывает строку позже)
-      setTimeout(function(){
-        var $details2 = findDetails($root);
-        pillify($details2);
-        hideCommentsTab($root);
-        hideQualityInline($details2);
-      }, 400);
+  // === Init ===
+  ready(function(){
+    try{
+      // Base CSS shields (fast path). JS will finish the job for dynamically inserted nodes.
+      injectCSS([
+        // 1) Quality badges (scoped to common areas to avoid global side-effects)
+        '.card [class*="quality"], .card [data-quality],',
+        '.full [class*="quality"], .full [data-quality],',
+        '.video [class*="quality"], .video [data-quality]{display:none!important;}',
 
-    } catch(err){
-      console.warn('[ui-tidy-jq]', err);
-    }
+        // 2) Comments blocks (several known containers)
+        '.comments, .full-comments, .panel-comments, .tabs__content.comments, .comments-block, #comments, [data-block="comments"]{display:none!important;}',
+
+        // 3) Genres backdrop scaffolding + anti-bullet/anti-::before
+        '.ui-genre-wrap{position:relative!important;}',
+        '.ui-genre-wrap .ui-genre-bg{position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;border-radius:12px;background:rgba(0,0,0,0.35);z-index:0;}',
+        '.ui-genre-wrap>*:not(.ui-genre-bg){position:relative;z-index:1;}',
+        '.ui-genre-wrap, .ui-genre-wrap ul, .ui-genre-wrap li{list-style:none!important;padding-left:0!important;margin-left:0!important;}',
+        '.ui-genre-wrap a::before, .ui-genre-wrap span::before, .ui-genre-wrap li::before{content:none!important;}'
+      ].join('
+'));
+
+      // First pass
+      hideQualityBadges();
+      removeComments();
+      addGenreBackdrop();
+
+      // Keep it alive across navigation
+      observe();
+
+      // Export tiny handle for debugging
+      window.__lampa_ui_tweaks__ = {
+        version: '1.2.0',
+        refresh: function(){ scheduleRefresh(); },
+        debug: function(v){ DEBUG = !!v; log('debug', DEBUG); }
+      };
+
+      log('loaded v1.2.0');
+    }catch(e){ log('init error', e); }
   });
-
-  console.log('[ui-tidy-jq] loaded');
 })();
+(function(){
+  'use strict';
+  /*
+   * Lampa UI Tweaks — Quality / Genres Backdrop / Remove Comments
+   * Version: 1.2.0 (2025-08-15)
+   * Goal:
+   *   1) Hide quality badges/labels everywhere it matters (cards, full pages, video blocks)
+   *   2) Add a translucent backdrop under the genre tags (как в rt_rating.js идея «подложки»)
+   *   3) Hide/disable the Comments tab & block on movie/series cards
+   *
+   * Design notes:
+   *   - 100% ES5 for WebOS/Tizen compatibility (no arrow functions / optional chaining / let/const)
+   *   - Defensive DOM work + MutationObserver (throttled) because Lampa rebuilds views on navigation
+   *   - Minimal footprint, avoids layout shifts (“уехавшая вёрстка”) and stray bullets/markers (“точка слева”)
+   */
 
+  var DEBUG = false; // set true for console logs
 
+  var CONFIG = {
+    selectors: {
+      // Containers where genres usually live in different Lampa skins
+      genreContainers: [
+        '.full-genres',
+        '.details__genres',
+        '.film__genres',
+        '.full__genres',
+        '.card__genres',
+        '.tags--genres',
+        '.tag-list.genres',
+        '.genres',
+        '[data-block="genres"]'
+      ].join(','),
 
+      // Known comments areas & tab content
+      commentsBlocks: [
+        '.comments',
+        '.full-comments',
+        '.panel-comments',
+        '.tabs__content.comments',
+        '.comments-block',
+        '#comments',
+        '[data-block="comments"]'
+      ].join(','),
+
+      // Tab titles (we'll hide the one that says Комментарии/Comments)
+      commentsTabTitles: '.tabs__head .tabs__title, .tabs__head .tabs__button, .tabs__title',
+
+      // Quality badges/labels inside common contexts
+      qualityWithin: [
+        '.card [class*="quality"], .card [data-quality]',
+        '.full [class*="quality"], .full [data-quality]',
+        '.video [class*="quality"], .video [data-quality]'
+      ].join(',')
+    },
+
+    // Visual style of the backdrop under genres
+    genreBackdrop: {
+      background: 'rgba(0,0,0,0.35)',
+      borderRadius: '12px'
+    }
+  };
+
+  function log(){
+    if(!DEBUG) return;
+    try{ console.log.apply(console, ['[Lampa UI Tweaks]'].concat([].slice.call(arguments))); }catch(e){}
+  }
+
+  function injectCSS(css){
+    try{
+      var style = document.createElement('style');
+      style.type = 'text/css';
+      style.appendChild(document.createTextNode(css));
+      document.head.appendChild(style);
+    }catch(e){ log('injectCSS error', e); }
+  }
+
+  // === 1) Hide quality badges (CSS + JS pass for stubborn nodes) ===
+  function hideQualityBadges(){
+    try{
+      var nodes = document.querySelectorAll(CONFIG.selectors.qualityWithin);
+      for(var i=0;i<nodes.length;i++){
+        var el = nodes[i];
+        // Avoid false-positives like progress/timeline widgets just in case
+        var cls = (el.className||'') + ' ' + (el.parentNode&&el.parentNode.className||'');
+        if(/progress|timeline|evolution|meter/i.test(cls)) continue;
+        el.style.setProperty('display','none','important');
+        el.setAttribute('aria-hidden','true');
+      }
+    }catch(e){ log('hideQualityBadges error', e); }
+  }
+
+  // === 2) Remove/hide Comments tab and content ===
+  function removeComments(){
+    try{
+      // Hide tab titles that match text
+      var titles = document.querySelectorAll(CONFIG.selectors.commentsTabTitles);
+      for(var i=0;i<titles.length;i++){
+        var t = titles[i];
+        var txt = (t.textContent||'').toLowerCase();
+        if(txt.indexOf('коммент') !== -1 || txt.indexOf('comments') !== -1){
+          t.style.setProperty('display','none','important');
+          t.setAttribute('aria-hidden','true');
+        }
+      }
+      // Hide known blocks
+      var blocks = document.querySelectorAll(CONFIG.selectors.commentsBlocks);
+      for(var j=0;j<blocks.length;j++){
+        var b = blocks[j];
+        b.style.setProperty('display','none','important');
+        b.setAttribute('aria-hidden','true');
+      }
+    }catch(e){ log('removeComments error', e); }
+  }
+
+  // === 3) Add translucent backdrop under genres (safe, no layout shifts) ===
+  function addGenreBackdrop(){
+    try{
+      var containers = document.querySelectorAll(CONFIG.selectors.genreContainers);
+      for(var i=0;i<containers.length;i++){
+        var box = containers[i];
+        if(!box || !box.parentNode) continue;
+
+        // Mark processed containers to avoid duplicates
+        if(box.getAttribute('data-ui-bg') === '1') continue;
+        box.setAttribute('data-ui-bg','1');
+
+        // Ensure container is a proper stacking context for the overlay
+        var cs = window.getComputedStyle(box);
+        var pos = (box.style.position||'') + ' ' + cs.position;
+        if(!/relative|absolute|fixed/i.test(pos)) box.style.position = 'relative';
+
+        // Add a scoping class for CSS resets (bullets, ::before)
+        if((' ' + box.className + ' ').indexOf(' ui-genre-wrap ') === -1){
+          box.className += (box.className ? ' ' : '') + 'ui-genre-wrap';
+        }
+
+        // Create overlay layer
+        var bg = document.createElement('div');
+        bg.className = 'ui-genre-bg';
+        bg.style.position = 'absolute';
+        bg.style.left = '0';
+        bg.style.top = '0';
+        bg.style.right = '0';
+        bg.style.bottom = '0';
+        bg.style.pointerEvents = 'none';
+        bg.style.background = CONFIG.genreBackdrop.background;
+        bg.style.borderRadius = CONFIG.genreBackdrop.borderRadius;
+        bg.style.zIndex = '0';
+
+        // Insert as last child so it spans the container without affecting flow
+        box.appendChild(bg);
+
+        // Raise actual genre tags above the overlay
+        var kids = box.children;
+        for(var k=0;k<kids.length;k++){
+          var child = kids[k];
+          if(child === bg) continue;
+          if(!child.style) continue;
+          child.style.position = child.style.position || 'relative';
+          child.style.zIndex = '1';
+        }
+      }
+    }catch(e){ log('addGenreBackdrop error', e); }
+  }
+
+  // === Observer (throttled) ===
+  var mo = null;
+  var refreshTimer = 0;
+  function scheduleRefresh(){
+    if(refreshTimer) return;
+    refreshTimer = setTimeout(function(){
+      refreshTimer = 0;
+      try{
+        hideQualityBadges();
+        removeComments();
+        addGenreBackdrop();
+      }catch(e){ log('refresh error', e); }
+    }, 60); // throttle bursts of mutations
+  }
+
+  function observe(){
+    try{
+      if(mo) mo.disconnect();
+      mo = new MutationObserver(function(){ scheduleRefresh(); });
+      mo.observe(document.body, {childList:true, subtree:true});
+    }catch(e){ log('observe error', e); }
+  }
+
+  // === DOM Ready helper ===
+  function ready(fn){
+    if(document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(fn,0);
+    else document.addEventListener('DOMContentLoaded', fn);
+  }
+
+  // === Init ===
+  ready(function(){
+    try{
+      // Base CSS shields (fast path). JS will finish the job for dynamically inserted nodes.
+      injectCSS([
+        // 1) Quality badges (scoped to common areas to avoid global side-effects)
+        '.card [class*="quality"], .card [data-quality],',
+        '.full [class*="quality"], .full [data-quality],',
+        '.video [class*="quality"], .video [data-quality]{display:none!important;}',
+
+        // 2) Comments blocks (several known containers)
+        '.comments, .full-comments, .panel-comments, .tabs__content.comments, .comments-block, #comments, [data-block="comments"]{display:none!important;}',
+
+        // 3) Genres backdrop scaffolding + anti-bullet/anti-::before
+        '.ui-genre-wrap{position:relative!important;}',
+        '.ui-genre-wrap .ui-genre-bg{position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;border-radius:12px;background:rgba(0,0,0,0.35);z-index:0;}',
+        '.ui-genre-wrap>*:not(.ui-genre-bg){position:relative;z-index:1;}',
+        '.ui-genre-wrap, .ui-genre-wrap ul, .ui-genre-wrap li{list-style:none!important;padding-left:0!important;margin-left:0!important;}',
+        '.ui-genre-wrap a::before, .ui-genre-wrap span::before, .ui-genre-wrap li::before{content:none!important;}'
+      ].join('
+'));
+
+      // First pass
+      hideQualityBadges();
+      removeComments();
+      addGenreBackdrop();
+
+      // Keep it alive across navigation
+      observe();
+
+      // Export tiny handle for debugging
+      window.__lampa_ui_tweaks__ = {
+        version: '1.2.0',
+        refresh: function(){ scheduleRefresh(); },
+        debug: function(v){ DEBUG = !!v; log('debug', DEBUG); }
+      };
+
+      log('loaded v1.2.0');
+    }catch(e){ log('init error', e); }
+  });
+})();
