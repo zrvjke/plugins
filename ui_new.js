@@ -30,9 +30,10 @@
         var style = document.createElement('style');
         style.id = 'semigenre-hide-quality-style';
         style.textContent = [
-            '/* Hide quality/source labels in movie/series cards */',
+            '/* Hide quality/source labels and durations in movie/series cards */',
             '.card__quality,',
-            '.card__view--quality {',
+            '.card__view--quality,',
+            '.card__time {',
             '    display: none !important;',
             '}',
             ''
@@ -47,6 +48,22 @@
      * will be removed from the information panel entirely.
      */
     var QUALITY_PATTERN = /\b(?:WEB\s?Rip|WEB|HDRip|HDTV|BluRay|DVDRip|BDRip|TS|CAM|4K|8K|2160p|1080p|720p)\b/i;
+
+    /**
+     * Regular expressions used to detect runtime and season/episode descriptors
+     * in the details panel.  Many cards display a runtime (e.g. "120 РјРёРЅ", "1С‡ 45 РјРёРЅ",
+     * "2h 10m") or, for series, a count of seasons and episodes (e.g. "3 СЃРµР·РѕРЅР°",
+     * "2 seasons 16 episodes").  These spans should be removed entirely to
+     * mirror the behaviour in the reference plugin, which hides such information.
+     *
+     * DURATION_PATTERN matches digits combined with common Russian or English
+     * abbreviations for hours and minutes.  SEASON_EPISODE_PATTERN matches
+     * digits together with words like "season", "seasons", "episode", "episodes",
+     * "СЃРµР·РѕРЅ", "СЃРµСЂРёР№" and their inflections.  We test for digits to avoid
+     * accidentally removing other textual elements like "РіРѕРґ" (year).
+     */
+    var DURATION_PATTERN = /(?:\d+\s*(?:С‡|С‡Р°СЃ|С‡Р°СЃР°|С‡Р°СЃРѕРІ|h|hr|hour|hrs)\s*\d*\s*(?:РјРёРЅ|РјРёРЅСѓС‚|m|min|minute|minutes)?|\d+\s*(?:РјРёРЅ|РјРёРЅСѓС‚|m|min|minute|minutes)|\d+\s*:\s*\d+)/i;
+    var SEASON_EPISODE_PATTERN = /\d+\s*(?:СЃРµР·РѕРЅ|СЃРµР·РѕРЅРѕРІ|season|seasons|СЃРµСЂРёР№|СЃРµСЂРёСЏ|СЃРµСЂРёРё|episode|episodes)/i;
 
     /**
      * Apply a uniform semiвЂ‘transparent style to a jQuery element
@@ -78,11 +95,19 @@
      */
     function styleGenres($details, movie) {
         if (!$details || !$details.length) return;
-        // 1. Remove quality/source tags from the details panel
+        // 1. Remove quality/source tags and runtime/season information from the details panel
         $details.find('span').each(function () {
             var $span = window.$(this);
             var txt = $span.text().trim();
+            // Remove if it matches a known quality label
             if (QUALITY_PATTERN.test(txt)) {
+                $span.remove();
+                return;
+            }
+            // Remove if it appears to describe duration (e.g. "120 РјРёРЅ", "1h 40m")
+            // or season/episode counts (e.g. "2 СЃРµР·РѕРЅР°", "3 seasons 24 episodes").
+            // To avoid false positives, ensure the span contains at least one digit.
+            if (/\d/.test(txt) && (DURATION_PATTERN.test(txt) || SEASON_EPISODE_PATTERN.test(txt))) {
                 $span.remove();
             }
         });
@@ -169,8 +194,8 @@
      */
     function init() {
         injectHideQualityStyle();
-        // Hide existing quality badges immediately
-        window.$('.card__quality').hide();
+        // Hide existing quality and time badges immediately
+        window.$('.card__quality, .card__time').hide();
         // Listen for detail pages being built
         Lampa.Listener.follow('full', function (e) {
             if (!e || e.type !== 'complite' || !e.data || !e.data.movie) return;
@@ -192,10 +217,10 @@
                 Array.prototype.forEach.call(mutation.addedNodes, function (node) {
                     if (!node || node.nodeType !== 1) return;
                     var $node = window.$(node);
-                    if ($node.hasClass('card__quality')) {
+                    if ($node.hasClass('card__quality') || $node.hasClass('card__time')) {
                         $node.hide();
                     }
-                    $node.find('.card__quality').hide();
+                    $node.find('.card__quality, .card__time').hide();
                 });
             });
         });
