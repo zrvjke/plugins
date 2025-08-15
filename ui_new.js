@@ -1,46 +1,44 @@
-// Lampa plugin: Hide quality labels, remove comments, and style genres
-// This script hides quality badges on cards (except the "TV" badge),
-// removes quality information and the comments section from the full
-// description page, and adds a semiвЂ‘transparent background to genre
-// labels. It uses vanilla JavaScript and MutationObserver so it
-// doesn't depend on jQuery being available.
+// Lampa plugin: Hide quality labels, remove comments and quality info, and add backgrounds to genres
+// This version fixes the undefined Lampa.Plugin error and works without jQuery.
 (function() {
   'use strict';
 
-  // Ensure Lampa is present and guard against duplicate injection
+  // Ensure Lampa is present and guard against double-injection
   if (!window.Lampa) return;
-  if (window.hideQualityGenrePluginNativeInjected) return;
-  window.hideQualityGenrePluginNativeInjected = true;
+  if (window.hideQualityGenrePluginFixedInjected) return;
+  window.hideQualityGenrePluginFixedInjected = true;
 
   /**
-   * Hide quality badges on card previews. We keep badges that
-   * contain "TV" (for TV shows) and hide all others such as 4K,
-   * CAM, TS, WEB DL, etc. This works regardless of the text case.
+   * Hide quality badges on card previews. Keeps the 'TV' badge but
+   * hides any other quality indicators such as 4K, BD, TS, CAM, etc.
+   *
+   * @param {Node} node Optional subtree to limit the search area
    */
-  function hideCardTypeBadges(node) {
-    // Query all card type elements within the given node (or document)
+  function hideCardQualityBadges(node) {
     var scope = node || document;
+    // Many quality badges live inside .card__type. Select all such elements.
     var elements = scope.querySelectorAll('.card__type');
     elements.forEach(function(el) {
-      var text = el.textContent.trim().toUpperCase();
-      if (text && text.indexOf('TV') !== 0) {
-        el.style.display = 'none';
-      }
+      var text = (el.textContent || '').trim().toUpperCase();
+      // Skip empty labels and the 'TV' label for series
+      if (!text || text.startsWith('TV')) return;
+      // Otherwise hide this element
+      el.style.display = 'none';
     });
   }
 
   /**
-   * Remove quality information from the full view. This hides the
-   * quality tag (.tag--quality) and removes any spans in the info
-   * row that begin with the translated word for "Quality:" or its
-   * English/Russian equivalents.
+   * Remove quality information from the full details page. This hides
+   * any `.tag--quality` elements and removes information rows that start
+   * with the word "Quality" (translated or in English/Russian) or contain
+   * typical quality tokens such as 4K, HDRip, WEB, TS, etc.
    */
-  function removeQualityFromFull() {
-    // Hide tag if present
+  function removeQualityInfo() {
+    // Hide quality tags near the poster
     document.querySelectorAll('.tag--quality').forEach(function(tag) {
       tag.style.display = 'none';
     });
-    // Determine translation key for "quality" if available
+    // Gather translation for "quality" if available
     var qualityKey = '';
     try {
       if (window.Lampa && Lampa.Lang) {
@@ -49,129 +47,144 @@
     } catch (err) {
       qualityKey = '';
     }
-    qualityKey = qualityKey.toLowerCase();
+    qualityKey = (qualityKey || '').toLowerCase();
+    // Patterns to detect quality strings
+    var qualityRegex = /\b(4K|BD|BDRIP|HDRIP|WEB|WEBDL|WEB-DL|WEBRIP|HDTV|TS|CAM|DVDRIP|DVDSCR|DVD|360P|480P|720P|1080P|2160P)\b/i;
     var selectors = '.full-start__info span, .full-start-new__info span';
     document.querySelectorAll(selectors).forEach(function(span) {
-      var txt = span.textContent.trim();
+      var txt = (span.textContent || '').trim();
       if (!txt) return;
       var lower = txt.toLowerCase();
-      // Remove if starts with translated quality key or generic words
+      // Remove if the row begins with the translated word for "quality" or the English/Russian word for quality
       if (qualityKey && lower.indexOf(qualityKey) === 0) {
         span.remove();
       } else if (lower.indexOf('quality') === 0 || lower.indexOf('РєР°С‡РµСЃС‚РІРѕ') === 0) {
         span.remove();
+      } else if (qualityRegex.test(txt)) {
+        // Remove rows containing quality tokens
+        span.remove();
       }
     });
   }
 
   /**
-   * Remove the comments section after the actors block. Lampa uses a
-   * scroll container with class .full-reviews for the comments list.
-   * We remove its closest .items-line container if it exists; otherwise
-   * we remove the .full-reviews element itself.
+   * Remove the comments section from the full details page. Lampa wraps
+   * the comments list inside `.full-reviews` within an `.items-line`
+   * container. If found, remove the entire parent block to avoid leaving
+   * an empty section header. If not, remove the reviews container itself.
    */
   function removeCommentsSection() {
-    var reviews = document.querySelectorAll('.full-reviews');
+    var reviews = document.querySelectorAll('.full-reviews, .full__reviews');
     reviews.forEach(function(review) {
       var parent = review.closest('.items-line');
-      if (parent) parent.remove(); else review.remove();
+      if (parent) {
+        parent.remove();
+      } else {
+        review.remove();
+      }
     });
   }
 
   /**
-   * Inject CSS for genre badges and apply the class to appropriate
-   * elements in the full view. We target spans in the info row
-   * containing pipes or commas (likely lists of genres) and
-   * elements with class .tag-count inside the tags block.
+   * Inject CSS for genre badges and apply a semi-transparent background
+   * to genre labels in the full details view. We assign the class
+   * `.genre-badge` to spans that look like comma-separated lists (genres)
+   * and to `.tag-count` elements in the tags section.
    */
   function styleGenres() {
-    // Inject CSS once
-    if (!document.getElementById('genre-badge-style')) {
+    // Inject our custom CSS only once
+    if (!document.getElementById('hide-quality-genre-style')) {
       var style = document.createElement('style');
-      style.id = 'genre-badge-style';
-      style.textContent =
-        '.genre-badge {\n' +
-        '  background: rgba(0,0,0,0.4);\n' +
-        '  padding: 0.2em 0.5em;\n' +
-        '  margin-right: 0.3em;\n' +
-        '  border-radius: 0.3em;\n' +
-        '  display: inline-block;\n' +
-        '  color: #fff;\n' +
-        '  font-size: 0.95em;\n' +
-        '}\n' +
-        '.full-descr__tags .tag-count {\n' +
-        '  background: rgba(0,0,0,0.4);\n' +
-        '  border-radius: 0.3em;\n' +
-        '  padding: 0.2em 0.5em;\n' +
-        '  color: #fff;\n' +
-        '}';
+      style.id = 'hide-quality-genre-style';
+      style.textContent = [
+        '.genre-badge {',
+        '  background: rgba(0,0,0,0.4);',
+        '  padding: 0.2em 0.5em;',
+        '  margin-right: 0.3em;',
+        '  border-radius: 0.3em;',
+        '  display: inline-block;',
+        '  color: #fff;',
+        '  font-size: 0.95em;',
+        '}',
+        '.full-descr__tags .tag-count {',
+        '  background: rgba(0,0,0,0.4);',
+        '  border-radius: 0.3em;',
+        '  padding: 0.2em 0.5em;',
+        '  color: #fff;',
+        '}',
+      ].join('\n');
       document.head.appendChild(style);
     }
-    // Apply to spans in the info row
+    // Apply to genre spans in the info row
     var infoSelectors = '.full-start__info span, .full-start-new__info span';
     document.querySelectorAll(infoSelectors).forEach(function(span) {
-      var text = span.textContent.trim();
+      var text = (span.textContent || '').trim();
       if (!text) return;
-      // Skip entries with colon or digits (runtime/season or numbers)
+      // Exclude rows with colons (like "Date:" or "Countries:") and numbers (duration)
       if (text.indexOf(':') !== -1) return;
       if (/\d/.test(text)) return;
-      // If contains commas or pipes, treat as genre list
+      // If it contains commas or pipes, assume it's a genre list and style it
       if (text.indexOf(',') !== -1 || text.indexOf('|') !== -1) {
         span.classList.add('genre-badge');
       }
     });
-    // Apply to tag-count elements
+    // Apply to tags count elements in the tags section
     document.querySelectorAll('.full-descr__tags .tag-count').forEach(function(el) {
       el.classList.add('genre-badge');
     });
   }
 
   /**
-   * Execute modifications on the full view after it finishes loading.
+   * Handler for the completion of the full card view. Runs
+   * modifications after a short delay to allow the DOM to render.
    */
-  function processFullView() {
-    removeQualityFromFull();
+  function onFullComplete() {
+    removeQualityInfo();
     removeCommentsSection();
     styleGenres();
   }
 
   /**
-   * Observe added nodes to hide quality badges. We immediately
-   * process existing nodes and then watch for new cards appended to
-   * the document. This covers dynamic lists and lazy loading.
+   * Observe the document for added nodes and hide quality badges as
+   * elements appear (useful for lazy-loaded cards and lists). Also run
+   * initial hiding on existing nodes.
    */
-  function observeCardLabels() {
-    // Initial run
-    hideCardTypeBadges(document.body);
-    // Observe future mutations
+  function observeCards() {
+    // Immediately hide on existing cards
+    hideCardQualityBadges(document.body);
+    // Observe for future additions
     var observer = new MutationObserver(function(mutations) {
       mutations.forEach(function(mutation) {
         mutation.addedNodes.forEach(function(node) {
-          if (node.nodeType !== 1) return;
-          hideCardTypeBadges(node);
+          if (node.nodeType === 1) {
+            hideCardQualityBadges(node);
+          }
         });
       });
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  // Listen for the "full" event (complete rendering of a details page)
+  // Hook into the "full" event that fires when a card view finishes
   window.Lampa.Listener.follow('full', function(event) {
     if (event && event.type === 'complite') {
-      // Delay slightly to allow the DOM to render completely
-      setTimeout(processFullView, 100);
+      // Run after a small delay to ensure the DOM is ready
+      setTimeout(onFullComplete, 100);
     }
   });
 
-  // Start observing card labels on initial load
-  observeCardLabels();
+  // Start observing cards for quality badge hiding
+  observeCards();
 
-  // Register plugin so it appears in the plugin list
-  window.Lampa.Plugin.create({
-    name: 'Hide Quality & Comments + Genre Background (native)',
-    version: '1.0.1',
-    type: 'card',
-    icon: 'рџ’ѕ',
-    description: 'Hides non-TV quality badges, removes quality information and comments, and styles genre labels.'
-  });
+  // Optionally register this plugin in the Lampa plugin list if the API exists
+  if (window.Lampa.Plugin && typeof window.Lampa.Plugin.create === 'function') {
+    window.Lampa.Plugin.create({
+      name: 'Hide Quality & Comments + Genre Background (fixed)',
+      version: '1.0.2',
+      type: 'card',
+      // Use a simple paintbrush emoji as the icon; browsers will handle this safely
+      icon: '\uD83D\uDD8D',
+      description: 'Hides non-TV quality badges, removes quality info and comments, and adds semi-transparent backgrounds to genre labels.'
+    });
+  }
 })();
