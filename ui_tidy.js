@@ -1,24 +1,16 @@
 (function(){
   'use strict';
   /*
-   * Lampa UI Tweaks — Quality / Genres Backdrop / Remove Comments
-   * Version: 1.2.0 (2025-08-15)
-   * Goal:
-   *   1) Hide quality badges/labels everywhere it matters (cards, full pages, video blocks)
-   *   2) Add a translucent backdrop under the genre tags (как в rt_rating.js идея «подложки»)
-   *   3) Hide/disable the Comments tab & block on movie/series cards
-   *
-   * Design notes:
-   *   - 100% ES5 for WebOS/Tizen compatibility (no arrow functions / optional chaining / let/const)
-   *   - Defensive DOM work + MutationObserver (throttled) because Lampa rebuilds views on navigation
-   *   - Minimal footprint, avoids layout shifts (“уехавшая вёрстка”) and stray bullets/markers (“точка слева”)
+   * Lampa UI Tweaks — hide quality, add genres backdrop, remove comments
+   * Version: 1.3.0 (2025-08-15)
+   * ES5-only (for WebOS/Tizen). No arrow functions, no optional chaining, no let/const.
    */
 
-  var DEBUG = false; // set true for console logs
+  var DEBUG = false; // switch to true to see logs in console
 
   var CONFIG = {
     selectors: {
-      // Containers where genres usually live in different Lampa skins
+      // 1) Containers where genres live (varies across skins/themes)
       genreContainers: [
         '.full-genres',
         '.details__genres',
@@ -31,7 +23,7 @@
         '[data-block="genres"]'
       ].join(','),
 
-      // Known comments areas & tab content
+      // 2) Comments blocks (both standalone and inside tabs)
       commentsBlocks: [
         '.comments',
         '.full-comments',
@@ -42,18 +34,26 @@
         '[data-block="comments"]'
       ].join(','),
 
-      // Tab titles (we'll hide the one that says Комментарии/Comments)
-      commentsTabTitles: '.tabs__head .tabs__title, .tabs__head .tabs__button, .tabs__title',
+      // 3) Comments tab titles/buttons
+      commentsTabTitles: [
+        '.tabs__head .tabs__title',
+        '.tabs__head .tabs__button',
+        '.tabs__title',
+        '.tab__title',
+        '.tab-button'
+      ].join(','),
 
-      // Quality badges/labels inside common contexts
+      // 4) Quality badges/labels
       qualityWithin: [
-        '.card [class*="quality"], .card [data-quality]',
-        '.full [class*="quality"], .full [data-quality]',
-        '.video [class*="quality"], .video [data-quality]'
+        '.card [class*="quality"]',
+        '.card [data-quality]',
+        '.full [class*="quality"]',
+        '.full [data-quality]',
+        '.video [class*="quality"]',
+        '.video [data-quality]'
       ].join(',')
     },
 
-    // Visual style of the backdrop under genres
     genreBackdrop: {
       background: 'rgba(0,0,0,0.35)',
       borderRadius: '12px'
@@ -74,25 +74,23 @@
     }catch(e){ log('injectCSS error', e); }
   }
 
-  // === 1) Hide quality badges (CSS + JS pass for stubborn nodes) ===
+  // 1) Hide quality badges
   function hideQualityBadges(){
     try{
-      var nodes = document.querySelectorAll(CONFIG.selectors.qualityWithin);
-      for(var i=0;i<nodes.length;i++){
-        var el = nodes[i];
-        // Avoid false-positives like progress/timeline widgets just in case
-        var cls = (el.className||'') + ' ' + (el.parentNode&&el.parentNode.className||'');
-        if(/progress|timeline|evolution|meter/i.test(cls)) continue;
+      var list = document.querySelectorAll(CONFIG.selectors.qualityWithin);
+      for(var i=0;i<list.length;i++){
+        var el = list[i];
+        var cls = (el.className||'') + ' ' + (el.parentNode && el.parentNode.className || '');
+        if(/progress|timeline|evolution|meter/i.test(cls)) continue; // safety
         el.style.setProperty('display','none','important');
         el.setAttribute('aria-hidden','true');
       }
     }catch(e){ log('hideQualityBadges error', e); }
   }
 
-  // === 2) Remove/hide Comments tab and content ===
+  // 2) Remove comments UI (tab and content)
   function removeComments(){
     try{
-      // Hide tab titles that match text
       var titles = document.querySelectorAll(CONFIG.selectors.commentsTabTitles);
       for(var i=0;i<titles.length;i++){
         var t = titles[i];
@@ -102,7 +100,6 @@
           t.setAttribute('aria-hidden','true');
         }
       }
-      // Hide known blocks
       var blocks = document.querySelectorAll(CONFIG.selectors.commentsBlocks);
       for(var j=0;j<blocks.length;j++){
         var b = blocks[j];
@@ -112,29 +109,27 @@
     }catch(e){ log('removeComments error', e); }
   }
 
-  // === 3) Add translucent backdrop under genres (safe, no layout shifts) ===
+  // 3) Add translucent backdrop under genres, no layout shift
   function addGenreBackdrop(){
     try{
       var containers = document.querySelectorAll(CONFIG.selectors.genreContainers);
       for(var i=0;i<containers.length;i++){
         var box = containers[i];
         if(!box || !box.parentNode) continue;
-
-        // Mark processed containers to avoid duplicates
-        if(box.getAttribute('data-ui-bg') === '1') continue;
+        if(box.getAttribute('data-ui-bg') === '1') continue; // processed
         box.setAttribute('data-ui-bg','1');
 
-        // Ensure container is a proper stacking context for the overlay
+        // Ensure stacking context
         var cs = window.getComputedStyle(box);
         var pos = (box.style.position||'') + ' ' + cs.position;
         if(!/relative|absolute|fixed/i.test(pos)) box.style.position = 'relative';
 
-        // Add a scoping class for CSS resets (bullets, ::before)
+        // Mark with helper class to scope CSS resets
         if((' ' + box.className + ' ').indexOf(' ui-genre-wrap ') === -1){
           box.className += (box.className ? ' ' : '') + 'ui-genre-wrap';
         }
 
-        // Create overlay layer
+        // Overlay layer
         var bg = document.createElement('div');
         bg.className = 'ui-genre-bg';
         bg.style.position = 'absolute';
@@ -147,37 +142,34 @@
         bg.style.borderRadius = CONFIG.genreBackdrop.borderRadius;
         bg.style.zIndex = '0';
 
-        // Insert as last child so it spans the container without affecting flow
         box.appendChild(bg);
 
-        // Raise actual genre tags above the overlay
+        // Raise children above overlay
         var kids = box.children;
         for(var k=0;k<kids.length;k++){
-          var child = kids[k];
-          if(child === bg) continue;
-          if(!child.style) continue;
-          child.style.position = child.style.position || 'relative';
-          child.style.zIndex = '1';
+          var ch = kids[k];
+          if(ch === bg) continue;
+          if(ch && ch.style){
+            if(!ch.style.position) ch.style.position = 'relative';
+            ch.style.zIndex = '1';
+          }
         }
       }
     }catch(e){ log('addGenreBackdrop error', e); }
   }
 
-  // === Observer (throttled) ===
+  // Mutation observer (throttled)
   var mo = null;
   var refreshTimer = 0;
   function scheduleRefresh(){
     if(refreshTimer) return;
     refreshTimer = setTimeout(function(){
       refreshTimer = 0;
-      try{
-        hideQualityBadges();
-        removeComments();
-        addGenreBackdrop();
-      }catch(e){ log('refresh error', e); }
-    }, 60); // throttle bursts of mutations
+      hideQualityBadges();
+      removeComments();
+      addGenreBackdrop();
+    }, 60);
   }
-
   function observe(){
     try{
       if(mo) mo.disconnect();
@@ -186,26 +178,24 @@
     }catch(e){ log('observe error', e); }
   }
 
-  // === DOM Ready helper ===
   function ready(fn){
     if(document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(fn,0);
     else document.addEventListener('DOMContentLoaded', fn);
   }
 
-  // === Init ===
+  // Init
   ready(function(){
     try{
-      // Base CSS shields (fast path). JS will finish the job for dynamically inserted nodes.
       injectCSS([
-        // 1) Quality badges (scoped to common areas to avoid global side-effects)
+        // Hide quality badges quickly via CSS; JS pass will catch dynamic nodes
         '.card [class*="quality"], .card [data-quality],',
         '.full [class*="quality"], .full [data-quality],',
         '.video [class*="quality"], .video [data-quality]{display:none!important;}',
 
-        // 2) Comments blocks (several known containers)
+        // Hide comments blocks
         '.comments, .full-comments, .panel-comments, .tabs__content.comments, .comments-block, #comments, [data-block="comments"]{display:none!important;}',
 
-        // 3) Genres backdrop scaffolding + anti-bullet/anti-::before
+        // Genres backdrop + anti-bullet/anti-::before fixes
         '.ui-genre-wrap{position:relative!important;}',
         '.ui-genre-wrap .ui-genre-bg{position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;border-radius:12px;background:rgba(0,0,0,0.35);z-index:0;}',
         '.ui-genre-wrap>*:not(.ui-genre-bg){position:relative;z-index:1;}',
@@ -219,41 +209,33 @@
       removeComments();
       addGenreBackdrop();
 
-      // Keep it alive across navigation
+      // Observe further DOM changes
       observe();
 
-      // Export tiny handle for debugging
+      // Tiny debug API
       window.__lampa_ui_tweaks__ = {
-        version: '1.2.0',
+        version: '1.3.0',
         refresh: function(){ scheduleRefresh(); },
-        debug: function(v){ DEBUG = !!v; log('debug', DEBUG); }
+        debug: function(v){ DEBUG = !!v; log('debug mode', DEBUG); }
       };
 
-      log('loaded v1.2.0');
+      log('loaded v1.3.0');
     }catch(e){ log('init error', e); }
   });
 })();
 (function(){
   'use strict';
   /*
-   * Lampa UI Tweaks — Quality / Genres Backdrop / Remove Comments
-   * Version: 1.2.0 (2025-08-15)
-   * Goal:
-   *   1) Hide quality badges/labels everywhere it matters (cards, full pages, video blocks)
-   *   2) Add a translucent backdrop under the genre tags (как в rt_rating.js идея «подложки»)
-   *   3) Hide/disable the Comments tab & block on movie/series cards
-   *
-   * Design notes:
-   *   - 100% ES5 for WebOS/Tizen compatibility (no arrow functions / optional chaining / let/const)
-   *   - Defensive DOM work + MutationObserver (throttled) because Lampa rebuilds views on navigation
-   *   - Minimal footprint, avoids layout shifts (“уехавшая вёрстка”) and stray bullets/markers (“точка слева”)
+   * Lampa UI Tweaks — hide quality, add genres backdrop, remove comments
+   * Version: 1.3.0 (2025-08-15)
+   * ES5-only (for WebOS/Tizen). No arrow functions, no optional chaining, no let/const.
    */
 
-  var DEBUG = false; // set true for console logs
+  var DEBUG = false; // switch to true to see logs in console
 
   var CONFIG = {
     selectors: {
-      // Containers where genres usually live in different Lampa skins
+      // 1) Containers where genres live (varies across skins/themes)
       genreContainers: [
         '.full-genres',
         '.details__genres',
@@ -266,7 +248,7 @@
         '[data-block="genres"]'
       ].join(','),
 
-      // Known comments areas & tab content
+      // 2) Comments blocks (both standalone and inside tabs)
       commentsBlocks: [
         '.comments',
         '.full-comments',
@@ -277,18 +259,26 @@
         '[data-block="comments"]'
       ].join(','),
 
-      // Tab titles (we'll hide the one that says Комментарии/Comments)
-      commentsTabTitles: '.tabs__head .tabs__title, .tabs__head .tabs__button, .tabs__title',
+      // 3) Comments tab titles/buttons
+      commentsTabTitles: [
+        '.tabs__head .tabs__title',
+        '.tabs__head .tabs__button',
+        '.tabs__title',
+        '.tab__title',
+        '.tab-button'
+      ].join(','),
 
-      // Quality badges/labels inside common contexts
+      // 4) Quality badges/labels
       qualityWithin: [
-        '.card [class*="quality"], .card [data-quality]',
-        '.full [class*="quality"], .full [data-quality]',
-        '.video [class*="quality"], .video [data-quality]'
+        '.card [class*="quality"]',
+        '.card [data-quality]',
+        '.full [class*="quality"]',
+        '.full [data-quality]',
+        '.video [class*="quality"]',
+        '.video [data-quality]'
       ].join(',')
     },
 
-    // Visual style of the backdrop under genres
     genreBackdrop: {
       background: 'rgba(0,0,0,0.35)',
       borderRadius: '12px'
@@ -309,25 +299,23 @@
     }catch(e){ log('injectCSS error', e); }
   }
 
-  // === 1) Hide quality badges (CSS + JS pass for stubborn nodes) ===
+  // 1) Hide quality badges
   function hideQualityBadges(){
     try{
-      var nodes = document.querySelectorAll(CONFIG.selectors.qualityWithin);
-      for(var i=0;i<nodes.length;i++){
-        var el = nodes[i];
-        // Avoid false-positives like progress/timeline widgets just in case
-        var cls = (el.className||'') + ' ' + (el.parentNode&&el.parentNode.className||'');
-        if(/progress|timeline|evolution|meter/i.test(cls)) continue;
+      var list = document.querySelectorAll(CONFIG.selectors.qualityWithin);
+      for(var i=0;i<list.length;i++){
+        var el = list[i];
+        var cls = (el.className||'') + ' ' + (el.parentNode && el.parentNode.className || '');
+        if(/progress|timeline|evolution|meter/i.test(cls)) continue; // safety
         el.style.setProperty('display','none','important');
         el.setAttribute('aria-hidden','true');
       }
     }catch(e){ log('hideQualityBadges error', e); }
   }
 
-  // === 2) Remove/hide Comments tab and content ===
+  // 2) Remove comments UI (tab and content)
   function removeComments(){
     try{
-      // Hide tab titles that match text
       var titles = document.querySelectorAll(CONFIG.selectors.commentsTabTitles);
       for(var i=0;i<titles.length;i++){
         var t = titles[i];
@@ -337,7 +325,6 @@
           t.setAttribute('aria-hidden','true');
         }
       }
-      // Hide known blocks
       var blocks = document.querySelectorAll(CONFIG.selectors.commentsBlocks);
       for(var j=0;j<blocks.length;j++){
         var b = blocks[j];
@@ -347,29 +334,27 @@
     }catch(e){ log('removeComments error', e); }
   }
 
-  // === 3) Add translucent backdrop under genres (safe, no layout shifts) ===
+  // 3) Add translucent backdrop under genres, no layout shift
   function addGenreBackdrop(){
     try{
       var containers = document.querySelectorAll(CONFIG.selectors.genreContainers);
       for(var i=0;i<containers.length;i++){
         var box = containers[i];
         if(!box || !box.parentNode) continue;
-
-        // Mark processed containers to avoid duplicates
-        if(box.getAttribute('data-ui-bg') === '1') continue;
+        if(box.getAttribute('data-ui-bg') === '1') continue; // processed
         box.setAttribute('data-ui-bg','1');
 
-        // Ensure container is a proper stacking context for the overlay
+        // Ensure stacking context
         var cs = window.getComputedStyle(box);
         var pos = (box.style.position||'') + ' ' + cs.position;
         if(!/relative|absolute|fixed/i.test(pos)) box.style.position = 'relative';
 
-        // Add a scoping class for CSS resets (bullets, ::before)
+        // Mark with helper class to scope CSS resets
         if((' ' + box.className + ' ').indexOf(' ui-genre-wrap ') === -1){
           box.className += (box.className ? ' ' : '') + 'ui-genre-wrap';
         }
 
-        // Create overlay layer
+        // Overlay layer
         var bg = document.createElement('div');
         bg.className = 'ui-genre-bg';
         bg.style.position = 'absolute';
@@ -382,37 +367,34 @@
         bg.style.borderRadius = CONFIG.genreBackdrop.borderRadius;
         bg.style.zIndex = '0';
 
-        // Insert as last child so it spans the container without affecting flow
         box.appendChild(bg);
 
-        // Raise actual genre tags above the overlay
+        // Raise children above overlay
         var kids = box.children;
         for(var k=0;k<kids.length;k++){
-          var child = kids[k];
-          if(child === bg) continue;
-          if(!child.style) continue;
-          child.style.position = child.style.position || 'relative';
-          child.style.zIndex = '1';
+          var ch = kids[k];
+          if(ch === bg) continue;
+          if(ch && ch.style){
+            if(!ch.style.position) ch.style.position = 'relative';
+            ch.style.zIndex = '1';
+          }
         }
       }
     }catch(e){ log('addGenreBackdrop error', e); }
   }
 
-  // === Observer (throttled) ===
+  // Mutation observer (throttled)
   var mo = null;
   var refreshTimer = 0;
   function scheduleRefresh(){
     if(refreshTimer) return;
     refreshTimer = setTimeout(function(){
       refreshTimer = 0;
-      try{
-        hideQualityBadges();
-        removeComments();
-        addGenreBackdrop();
-      }catch(e){ log('refresh error', e); }
-    }, 60); // throttle bursts of mutations
+      hideQualityBadges();
+      removeComments();
+      addGenreBackdrop();
+    }, 60);
   }
-
   function observe(){
     try{
       if(mo) mo.disconnect();
@@ -421,26 +403,24 @@
     }catch(e){ log('observe error', e); }
   }
 
-  // === DOM Ready helper ===
   function ready(fn){
     if(document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(fn,0);
     else document.addEventListener('DOMContentLoaded', fn);
   }
 
-  // === Init ===
+  // Init
   ready(function(){
     try{
-      // Base CSS shields (fast path). JS will finish the job for dynamically inserted nodes.
       injectCSS([
-        // 1) Quality badges (scoped to common areas to avoid global side-effects)
+        // Hide quality badges quickly via CSS; JS pass will catch dynamic nodes
         '.card [class*="quality"], .card [data-quality],',
         '.full [class*="quality"], .full [data-quality],',
         '.video [class*="quality"], .video [data-quality]{display:none!important;}',
 
-        // 2) Comments blocks (several known containers)
+        // Hide comments blocks
         '.comments, .full-comments, .panel-comments, .tabs__content.comments, .comments-block, #comments, [data-block="comments"]{display:none!important;}',
 
-        // 3) Genres backdrop scaffolding + anti-bullet/anti-::before
+        // Genres backdrop + anti-bullet/anti-::before fixes
         '.ui-genre-wrap{position:relative!important;}',
         '.ui-genre-wrap .ui-genre-bg{position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none;border-radius:12px;background:rgba(0,0,0,0.35);z-index:0;}',
         '.ui-genre-wrap>*:not(.ui-genre-bg){position:relative;z-index:1;}',
@@ -454,17 +434,19 @@
       removeComments();
       addGenreBackdrop();
 
-      // Keep it alive across navigation
+      // Observe further DOM changes
       observe();
 
-      // Export tiny handle for debugging
+      // Tiny debug API
       window.__lampa_ui_tweaks__ = {
-        version: '1.2.0',
+        version: '1.3.0',
         refresh: function(){ scheduleRefresh(); },
-        debug: function(v){ DEBUG = !!v; log('debug', DEBUG); }
+        debug: function(v){ DEBUG = !!v; log('debug mode', DEBUG); }
       };
 
-      log('loaded v1.2.0');
+      log('loaded v1.3.0');
     }catch(e){ log('init error', e); }
   });
 })();
+
+
