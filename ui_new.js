@@ -1,11 +1,12 @@
 /**
  * Lampa plugin: Hide Details Noise
- *  - Movies: hide HH:MM in details line
- *  - Series: hide Seasons/Episodes in details line + "Next … / Days left: N"
- *  - Remove Comments section (by heading/classes and between Actors → (Recommendations|Collection))
- *  - Remove Seasons block (big seasons section on series pages)
+ *  - Movies: remove HH:MM from details line
+ *  - Series: remove Seasons/Episodes in details line + "Следующая … / Осталось дней: N"
+ *  - Remove Comments section (by heading/classes and between Actors → (Recommendations/Collection))
+ *  - Remove Seasons block (big section like "Сезон 1")
+ *  - Hard remove from DOM + forced reflow to avoid focus/scroll stops
  *
- * Version: 1.7.3 (hard remove + reflow fix, ASCII-safe, ES5)
+ * Version: 1.7.6 (Unicode-safe, ES5)
  * Author: Roman + ChatGPT
  */
 
@@ -17,7 +18,6 @@
   // ---------------- helpers ----------------
   function textOf(node){ return (node && (node.textContent || node.innerText) || '').trim(); }
   function removeNode(n){ if (n && n.parentNode) n.parentNode.removeChild(n); }
-  function markRemoved(n){ if (!n) return; n.setAttribute('data-hds-removed','1'); }
   function isPureNumber(s){ return /^\d+$/.test((s||'').trim()); }
   function isTimeToken(s){ return /^\d{1,2}:\d{2}$/.test((s||'').trim()); }
   function norm(s){ return (s||'').replace(/\u00A0/g,' ').replace(/\s+/g,' ').trim().toLowerCase(); }
@@ -36,24 +36,21 @@
       first = container.firstElementChild;
     }
   }
-  // Служебно: после удаления дёргаем перерисовку, чтобы лента/навигация обновилась
+  // заставляем интерфейс пересчитать размеры/навигацию
   function forceReflow(){
     try{
-      // читаем offset, чтобы форснуть reflow
       void document.body.offsetHeight;
-      // посылаем resize/scroll, многие компоненты на это подписаны
       window.dispatchEvent(new Event('resize'));
       var scrollers = document.querySelectorAll('.scroll, .content, .layout__body, .full, .full-start, .full-start-new');
       for (var i=0;i<scrollers.length;i++){
-        var el = scrollers[i];
-        el.scrollTop = el.scrollTop; // noop, но триггерит перерисовку
+        scrollers[i].scrollTop = scrollers[i].scrollTop;
       }
     }catch(e){}
   }
 
   // ---------- series tokens ----------
-  var RU_SEASON  = '(?:\\u0441\\u0435\\u0437\\u043e\\u043d(?:\\u0430|\\u044b|\\u043e\\u0432)?)';
-  var RU_EPISODE = '(?:\\u0441\\u0435\\u0440\\u0438\\u044f|\\u0441\\u0435\\u0440\\u0438\\u0438|\\u0441\\u0435\\u0440\\u0438\\u0439)';
+  var RU_SEASON  = '(?:сезон(?:а|ы|ов)?)';
+  var RU_EPISODE = '(?:серия|серии|серий)';
 
   var RE_LABEL = new RegExp('^(?:' + RU_SEASON + '|' + RU_EPISODE + '|seasons?|episodes?)\\s*:?$', 'i');
   var RE_INLINE_SEASON  = new RegExp('^(?:' + RU_SEASON + '|seasons?)\\s*:?\\s*\\d+$', 'i');
@@ -68,7 +65,7 @@
   }
 
   // ---------- next-air tokens ----------
-  var RU_MONTH = '(?:\\u044f\\u043d\\u0432\\u0430\\u0440\\u044f|\\u0444\\u0435\\u0432\\u0440\\u0430\\u043b\\u044f|\\u043c\\u0430\\u0440\\u0442\\u0430|\\u0430\\u043f\\u0440\\u0435\\u043b\\u044f|\\u043c\\u0430\\u044f|\\u0438\\u044e\\u043d\\u044f|\\u0438\\u044e\\u043b\\u044f|\\u0430\\u0432\\u0433\\u0443\\u0441\\u0442\\u0430|\\u0441\\u0435\\u043d\\u0442\\u044f\\u0431\\u0440\\u044f|\\u043e\\u043a\\u0442\\u044f\\u0431\\u0440\\u044f|\\u043d\\u043e\\u044f\\u0431\\u0440\\u044f|\\u0434\\u0435\\u043a\\u0430\\u0431\\u0440\\u044f)';
+  var RU_MONTH = '(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)';
   var EN_MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
 
   function isDatePiece(t){
@@ -77,9 +74,9 @@
     return /^\d{1,2}$/.test(s) || new RegExp('^'+RU_MONTH+'$','i').test(s) ||
            new RegExp('^'+EN_MONTH+'$','i').test(s) || /^\d{4}$/.test(s);
   }
-  var RE_NEXT_LABEL = new RegExp('^(?:\\u0421\\u043b\\u0435\\u0434\\u0443\\u044e\\u0449(?:\\u0430\\u044f|\\u0438\\u0439|\\u0435\\u0435|\\u0438\\u0435)?(?:\\s+(?:\\u0441\\u0435\\u0440\\u0438\\u044f|\\u044d\\u043f\\u0438\\u0437\\u043e\\u0434))?|next(?:\\s+(?:episode|ep))?)\\s*:?$', 'i');
-  var RE_REMAIN_LABEL  = new RegExp('^(?:\\u041e\\u0441\\u0442\\u0430\\u043b\\u043e\\u0441\\u044c\\s+\\u0434\\u043d\\u0435\\u0439|days\\s+left)\\s*:?$', 'i');
-  var RE_REMAIN_INLINE = new RegExp('^(?:\\u041e\\u0441\\u0442\\u0430\\u043b\\u043e\\u0441\\u044c\\s+\\u0434\\u043d\\u0435\\u0439|days\\s+left)\\s*:?\\s*\\d+\\s*$', 'i');
+  var RE_NEXT_LABEL = /^(?:следующ(?:ая|ий|ие|ее)(?:\s+(?:серия|эпизод))?|next(?:\s+(?:episode|ep))?)\s*:?\s*$/i;
+  var RE_REMAIN_LABEL  = /^(?:осталось\s+дней|days\s+left)\s*:?$/i;
+  var RE_REMAIN_INLINE = /^(?:осталось\s+дней|days\s+left)\s*:?[\s\d]+$/i;
 
   function isNextLabelToken(t){ return !!t && RE_NEXT_LABEL.test(t); }
   function isRemainLabelToken(t){ return !!t && RE_REMAIN_LABEL.test(t); }
@@ -162,12 +159,12 @@
     for (i=0;i<nodes.length;i++) observeDetails(nodes[i]);
   }
 
-  // ---------- comments & seasons sections (HARD REMOVE) ----------
-  var RE_ACTORS = /^(?:\\u0410\\u043a\\u0442\\u0451\\u0440\\u044b|\\u0410\\u043a\\u0442\\u0435\\u0440\\u044b|\\u0412\\u0020\\u0440\\u043e\\u043b\\u044f\\u0445|actors?|cast)$/i;
-  var RE_RECS   = /^(?:\\u0420\\u0435\\u043a\\u043e\\u043c\\u0435\\u043d\\u0434\\u0430\\u0446[^\n\r]*|recommendations?)$/i;
-  var RE_COLL   = /^(?:\\u041a\\u043e\\u043b\\u043b\\u0435\\u043a\\u0446[^\n\r]*|collections?)$/i;
-  var RE_COMM_HEAD = /^(?:\\u043a\\u043e\\u043c\\u043c\\u0435\\u043d\\u0442\\u0430\\u0440\\u0438\\u0438|comments?|reviews|\\u043e\\u0442\\u0437\\u044b\\u0432\\u044b)$/i;
-  var RE_SEASONS_HEAD = /^(?:\\u0441\\u0435\\u0437\\u043e\\u043d(?:\\s*\\d+)?|\\u0441\\u0435\\u0437\\u043e\\u043d\\u044b(?:\\s*\\d+)?|seasons?(?:\\s*\\d+)?)$/i;
+  // ---------- sections to remove (comments & seasons) ----------
+  var RE_ACTORS = /^(?:Актёры|Актеры|В ролях|actors?|cast)$/i;
+  var RE_RECS   = /^(?:Рекомендац[^\n\r]*|recommendations?)$/i;
+  var RE_COLL   = /^(?:Коллекц[^\n\r]*|collections?)$/i;
+  var RE_COMM_HEAD = /^(?:комментарии|comments?|reviews|отзывы)$/i;
+  var RE_SEASONS_HEAD = /^(?:сезон(?:\s*\d+)?|сезоны(?:\s*\d+)?|seasons?(?:\s*\d+)?)$/i;
 
   var COMM_CLASS_SELECTOR = '[class*="comment"],[id*="comment"],[class*="review"],[id*="review"]';
 
@@ -184,13 +181,11 @@
     }
     return el;
   }
-
   function removeSectionNode(node){
     if (!node) return;
-    markRemoved(node);
     var prev = node.previousElementSibling;
     removeNode(node);
-    // зачистим пустые «прокладки» сразу перед удалённым узлом
+    // зачистим пустые «прокладки» сразу рядом
     while (prev && norm(textOf(prev))==='' && (!prev.children || prev.children.length===0)){
       var p = prev.previousElementSibling;
       removeNode(prev);
@@ -198,7 +193,7 @@
     }
   }
 
-  // 1) по заголовку — удалить целую секцию комментариев
+  // A) по заголовку — удалить целую секцию комментариев
   function nukeCommentsByHeading(root){
     var scope = root || document;
     var heads = scope.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p');
@@ -214,7 +209,7 @@
     }
   }
 
-  // 2) удалить всё между «Актёры» ←→ ближайшей из (Рекомендации|Коллекция), если это выглядит как комментарии
+  // B) удалить всё между «Актёры» ←→ первой из (Рекомендации|Коллекция), если это похоже на комментарии
   function nukeBetweenActorsAndNext(root){
     var scope=root||document;
     var hActors=findFirstHeading(RE_ACTORS,scope);
@@ -235,8 +230,7 @@
     var cur = secNext.previousElementSibling, guard=0;
     while (cur && guard++<80){
       if (secActors && cur===secActors) break;
-      // эвристика «похоже на комментарии»
-      var looks = false;
+      var looks=false;
       if (cur.querySelector) {
         if (cur.querySelector(COMM_CLASS_SELECTOR)) looks=true;
         var head = cur.querySelector('h1,h2,h3,h4,h5,h6,div,span,p');
@@ -254,13 +248,13 @@
     }
   }
 
-  // 3) по классам/ID — добивка
+  // C) по классам/ID — добивка
   function nukeByClasses(root){
     var scope=root||document, nodes=scope.querySelectorAll(COMM_CLASS_SELECTOR), i;
     for (i=0;i<nodes.length;i++) removeSectionNode(nodes[i]);
   }
 
-  // 4) секции сезонов (большой блок)
+  // D) секции сезонов (большой блок)
   function nukeSeasonsSections(root){
     var scope = root || document;
     var nodes = scope.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p');
@@ -284,7 +278,7 @@
     forceReflow();
   }
 
-  // ---------- CSS safety net (на случай мгновенной перерисовки между наблюдениями) ----------
+  // ---------- CSS safety net ----------
   function injectCssOnce(){
     if (document.getElementById('hds-comments-css')) return;
     var style = document.createElement('style');
@@ -306,9 +300,7 @@
       if (pend) return; pend=true;
       setTimeout(function(){
         pend=false;
-        // details cleanup
         scanDetails(document);
-        // remove sections hard + reflow
         nukeAllNoise(document);
         injectCssOnce();
       },30);
@@ -356,4 +348,3 @@
   })();
 
 })();
-
