@@ -1,22 +1,19 @@
 /**
- * Lampa plugin: Hide Duration (movies) & Seasons/Episodes (series)
- * Version: 1.2.1 (ASCII-safe, stable)
+ * Lampa plugin: Hide Duration (movies) & Seasons/Episodes & Next-air (series)
+ * Version: 1.3.0 (ASCII-safe, stable)
  * Author: Roman + ChatGPT
  *
  * Что делает:
- *  - ФИЛЬМЫ: удаляет токен длительности HH:MM (напр., 02:14) и соседний разделитель.
- *  - СЕРИАЛЫ: удаляет блоки "Сезоны: N" / "Серии: M" (и RU/EN варианты),
- *             как в одном спане, так и разнесённые по нескольким спанам,
- *             плюс все прилегающие разделители.
+ *  - ФИЛЬМЫ: удаляет длительность HH:MM и соседний разделитель.
+ *  - СЕРИАЛЫ:
+ *      • удаляет "Сезоны/Серии" (RU/EN) — inline и разнесённые по спанам, с разделителями;
+ *      • удаляет блок "Следующая <дата> / Осталось дней: N" (RU/EN), включая левый разделитель.
  *
  * Совместимость:
- *  - Старые/новые селекторы: full-start*, full-start-new*.
- *  - Реагирует на 'full' (build/open/complite) и подчищает любые
- *    дальнейшие перерисовки через MutationObserver (без дубликатов).
- *
- * Технически:
- *  - ES5 (var/function), ASCII-safe (\uXXXX в регэкспах),
- *    без NodeList.forEach/Set/WeakSet.
+ *  - Селекторы full-start* и full-start-new*.
+ *  - Реагирует на события 'full' (build/open/complite) и подчищает любые
+ *    последующие перерисовки через MutationObserver (без дублей наблюдателей).
+ *  - ES5, ASCII-safe (\uXXXX), без NodeList.forEach/Set/WeakSet.
  */
 
 (function () {
@@ -34,12 +31,12 @@
     return /^\d{1,2}:\d{2}$/.test((s || '').trim());
   }
 
-  // Разделитель: фирменные split-элементы или одиночные символы . • · |
+  // Разделитель: фирменные split-элементы или одиночные символы . • · | /
   function isSeparatorNode(el) {
     if (!el) return false;
     var cls = (el.className || '') + '';
     var txt = textOf(el);
-    return /full-start.*__split/.test(cls) || /^[.\u2022\u00B7|]$/.test(txt);
+    return /full-start.*__split/.test(cls) || /^[.\u2022\u00B7|\/]$/.test(txt);
   }
 
   function removeNode(node) {
@@ -90,6 +87,42 @@
            RE_INLINE_NUM_FIRST_EPISODE.test(txt);
   }
 
+  // ----------------- "Next air" detection (ASCII-safe) -----------------
+
+  // RU months (genitive): января ... декабря
+  var RU_MONTH = '(?:\\u044f\\u043d\\u0432\\u0430\\u0440\\u044f|\\u0444\\u0435\\u0432\\u0440\\u0430\\u043b\\u044f|\\u043c\\u0430\\u0440\\u0442\\u0430|\\u0430\\u043f\\u0440\\u0435\\u043b\\u044f|\\u043c\\u0430\\u044f|\\u0438\\u044e\\u043d\\u044f|\\u0438\\u044e\\u043b\\u044f|\\u0430\\u0432\\u0433\\u0443\\u0441\\u0442\\u0430|\\u0441\\u0435\\u043d\\u0442\\u044f\\u0431\\u0440\\u044f|\\u043e\\u043a\\u0442\\u044f\\u0431\\u0440\\u044f|\\u043d\\u043e\\u044f\\u0431\\u0440\\u044f|\\u0434\\u0435\\u043a\\u0430\\u0431\\u0440\\u044f)';
+  // EN months (short/full)
+  var EN_MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
+
+  function isDatePiece(txt) {
+    if (!txt) return false;
+    var t = (txt || '').trim().toLowerCase();
+    return /^\d{1,2}$/.test(t) ||                 // day number
+           new RegExp('^' + RU_MONTH + '$', 'i').test(t) ||
+           new RegExp('^' + EN_MONTH + '$', 'i').test(t) ||
+           /^\d{4}$/.test(t);                      // year
+  }
+
+  // "Следующая ..." / "Next ..."
+  var RE_NEXT_LABEL = new RegExp('^(?:\\u0421\\u043b\\u0435\\u0434\\u0443\\u044e\\u0449[\\u0430\\u0438\\u0435]?|next)\\b\\s*:?', 'i');
+
+  // "Осталось дней: N" / "Days left: N"
+  var RE_REMAIN_LABEL = new RegExp('^(?:\\u041e\\u0441\\u0442\\u0430\\u043b\\u043e\\u0441\\u044c\\s+\\u0434\\u043d\\u0435\\u0439|days\\s+left)\\s*:?$', 'i');
+  var RE_REMAIN_INLINE = new RegExp('^(?:\\u041e\\u0441\\u0442\\u0430\\u043b\\u043e\\u0441\\u044c\\s+\\u0434\\u043d\\u0435\\u0439|days\\s+left)\\s*:?\\s*\\d+\\s*$', 'i');
+
+  function isNextLabelToken(txt) {
+    if (!txt) return false;
+    return RE_NEXT_LABEL.test(txt);
+  }
+  function isRemainLabelToken(txt) {
+    if (!txt) return false;
+    return RE_REMAIN_LABEL.test(txt);
+  }
+  function isRemainInlineToken(txt) {
+    if (!txt) return false;
+    return RE_REMAIN_INLINE.test(txt);
+  }
+
   // ----------------- core per-container -----------------
 
   function stripTokensIn(container) {
@@ -127,26 +160,77 @@
 
       // 3) СЕРИАЛЫ: раздельные спаны "Сезоны" [split?] "3"
       if (isSeriesLabelToken(txt)) {
-        // слева мог быть разделитель
         var leftSep = span.previousElementSibling;
         if (isSeparatorNode(leftSep)) toRemove.push(leftSep);
 
-        // между меткой и числом может стоять split — убираем и двигаемся к числу
         var n = span.nextElementSibling;
         if (isSeparatorNode(n)) { toRemove.push(n); n = span.nextElementSibling; }
 
         if (n && isPureNumber(textOf(n))) {
-          // после числа может быть разделитель — тоже убираем
           var afterNum = n.nextElementSibling;
           if (isSeparatorNode(afterNum)) toRemove.push(afterNum);
           toRemove.push(n);
         } else {
-          // если числа нет, уберём ближайший правый split, чтобы не оставлять точку
           var rsep = span.nextElementSibling;
           if (isSeparatorNode(rsep)) toRemove.push(rsep);
         }
 
         toRemove.push(span);
+        continue;
+      }
+
+      // 4) СЕРИАЛЫ: "Следующая <дата> ..."  (RU/EN)
+      if (isNextLabelToken(txt)) {
+        var pN = span.previousElementSibling;
+        if (isSeparatorNode(pN)) toRemove.push(pN); // левую точку перед блоком
+
+        // Удаляем сам лейбл
+        toRemove.push(span);
+
+        // Удаляем последовательные кусочки даты и разделители (/, split)
+        var cur = span.nextElementSibling;
+        var guard = 0;
+        while (cur && guard++ < 10) { // ограничим, чтобы не съесть лишнее
+          var tcur = textOf(cur);
+          if (isSeparatorNode(cur) || isDatePiece(tcur)) {
+            toRemove.push(cur);
+            cur = cur.nextElementSibling;
+            continue;
+          }
+          break;
+        }
+        continue;
+      }
+
+      // 5) СЕРИАЛЫ: "Осталось дней: N"
+      if (isRemainInlineToken(txt)) {
+        var pR1 = span.previousElementSibling;
+        var nR1 = span.nextElementSibling;
+        if (isSeparatorNode(pR1)) toRemove.push(pR1);
+        else if (isSeparatorNode(nR1)) toRemove.push(nR1);
+        toRemove.push(span);
+        continue;
+      }
+      if (isRemainLabelToken(txt)) {
+        var pR = span.previousElementSibling;
+        if (isSeparatorNode(pR)) toRemove.push(pR);
+
+        // возможен split после метки
+        var nr = span.nextElementSibling;
+        if (isSeparatorNode(nr)) { toRemove.push(nr); nr = span.nextElementSibling; }
+
+        // число дней
+        if (nr && isPureNumber(textOf(nr))) {
+          var afterNr = nr.nextElementSibling;
+          if (isSeparatorNode(afterNr)) toRemove.push(afterNr);
+          toRemove.push(nr);
+        } else {
+          var rsep2 = span.nextElementSibling;
+          if (isSeparatorNode(rsep2)) toRemove.push(rsep2);
+        }
+
+        toRemove.push(span);
+        continue;
       }
     }
 
