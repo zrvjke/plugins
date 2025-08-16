@@ -1,29 +1,29 @@
 /**
- * Lampa plugin: KP Cast via TMDB External IDs (v2.0.0)
+ * Lampa plugin: KP Cast via TMDB (v2.1.0 — fallback TMDB search)
  * Автор: Рома + твоя девочка :)
  *
- * Что делает:
- *  - На экране карточки берёт точный TMDB id и тип (movie/tv).
- *  - Через Lampa.TMDB.api запрашивает /external_ids → imdb_id.
- *  - По imdb_id:
- *      1) api.kinopoisk.dev → kpId + persons
- *      2) если kpId есть → kinopoiskapiunofficial.tech /v1/staff (предпочтительно)
- *      3) если kpId нет → берём persons из DEV
- *  - Подменяет секцию «Актёры» аккуратно, не ломая скролл.
+ * Алгоритм:
+ *  1) Пытаюсь достать TMDB id и тип (movie/tv) из Activity или URL.
+ *  2) Если id нет — через Lampa.TMDB.api делаю TMDB search (movie/tv/multi) по названию(+варианты) и году,
+ *     выбираю первый подходящий результат → получаю exact id+type.
+ *  3) TMDB /external_ids → imdb_id.
+ *  4) По imdb_id: api.kinopoisk.dev → kpId/persons; если kpId есть → staff с kinopoiskapiunofficial.tech.
+ *  5) Если ничего — оставляю TMDb каст как есть.
  */
 
 (function () {
   'use strict';
 
-  /*** КЛЮЧИ И НАСТРОЙКИ ***/
+  /*** КЛЮЧИ / НАСТРОЙКИ ***/
   var KPU_API_KEY = 'dc9196ea-4cc8-48e8-8259-0cbdfa58eaf1'; // kinopoiskapiunofficial.tech
   var DEV_API_KEY = 'KS9Z0SJ-5WCMSN8-MA3VHZK-V1ZFH4G';       // api.kinopoisk.dev
   var MAX_ACTORS  = 24;
-  var CACHE_TTL   = 7 * 24 * 3600e3;                         // 7 дней
-  var DEBUG       = true;                                    // всплывашки
+  var CACHE_TTL   = 7 * 24 * 3600e3;
+  var DEBUG       = true;
 
   var KPU_BASE = 'https://kinopoiskapiunofficial.tech';
   var DEV_BASE = 'https://api.kinopoisk.dev';
+  var DETAILS  = '.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info';
 
   /*** Утилиты ***/
   function txt(n){ return (n && (n.textContent||n.innerText)||'').replace(/\u00A0/g,' ').trim(); }
@@ -64,28 +64,116 @@
   }
   function cset(key,val){ try{ localStorage.setItem(key, JSON.stringify({t:Date.now(), v:val})); }catch(e){} }
 
-  /*** Достаём текущий TMDB id и тип карточки ***/
-  function getCurrentCard(){
-    var method=null, id=null;
+  /*** Извлечение названий/года для поиска ***/
+  function extractTitles(){
+    var titles = [];
+    var titleEl = $('.full-title, .full-start__title, .full-start-new__title, .full-title-name, .full__title, h1, h2');
+    if (titleEl){
+      var raw = txt(titleEl);
+      if (raw){
+        var parts = raw.split('/');
+        if (parts.length>1){
+          titles.push(parts[0].trim());
+          titles.push(parts.slice(1).join('/').trim());
+        } else titles.push(raw.trim());
+      }
+    }
+    // оригинал/альт
+    var cand = $$('[class*="original"],[class*="orig"],[data-original]');
+    cand.forEach(function(n){ var t=txt(n); if(t) titles.push(t); });
+    // alt постера
+    var poster = $('img[alt], .full-poster img[alt], .full-start__left img[alt]');
+    if (poster && poster.alt) titles.push(poster.alt);
+    // подчистить и уникализировать
+    titles = uniq(titles.map(function(t){ return t.replace(/\s*\(\d{4}\)\s*$/,'').replace(/\s*\[\d{4}\]\s*$/,'').trim(); })
+                         .filter(function(t){ return t && t.length>0; }))
+             .slice(0,6);
+    if (DEBUG) noty('TMDB search titles → ' + titles.join(' | '));
+    return titles;
+  }
+  function extractYear(){
+    var year=''; var det=$(DETAILS);
+    if(det){ var spans=$$('span',det); for(var i=0;i<spans.length;i++){ var s=txt(spans[i]); if(/^\d{4}$/.test(s)){ year=s; break; } } }
+    if(!year && document.title){ var m=document.title.match(/\b(19|20)\d{2}\b/); if(m) year=m[0]; }
+    return year;
+  }
+
+  /*** TMDB helpers (через встроенный прокси Лампы) ***/
+  function tmdbApi(path, params){
+    return new Promise(function(resolve,reject){
+      if (!window.Lampa || !Lampa.TMDB || typeof Lampa.TMDB.api !== 'function'){
+        return reject('no-tmdb-proxy');
+      }
+      Lampa.TMDB.api(path, params || {}, function(json){ resolve(json||{}); }, function(){ reject('tmdb-error'); });
+    });
+  }
+
+  function getCardFromActivity(){
     try{
       if (window.Lampa && Lampa.Activity && typeof Lampa.Activity.active === 'function'){
         var act = Lampa.Activity.active();
-        if (act && act.activity && act.activity.params){
-          method = act.activity.params.method || act.activity.params.content_type || null; // 'movie' | 'tv'
-          id     = act.activity.params.id || null;
+        if (act && act.activity){
+          var p = act.activity.params || {};
+          var id = p.id || (act.activity.card && act.activity.card.id) || null;
+          var method = p.method || p.content_type || (act.activity.card && act.activity.card.type) || null;
+          return { id: id, method: method };
         }
       }
     }catch(e){}
-    // из URL-хэша (подстраховка)
+    // URL-хэш запасной
     var h = String(location.hash||'');
-    if (!id){
-      var m1 = h.match(/[?&]id=(\d+)/); if (m1) id = m1[1];
+    var id  = (h.match(/[?&]id=(\d+)/)||[])[1] || null;
+    var mth = (h.match(/[?&](?:method|content_type)=(movie|tv)/)||[])[1] || null;
+    return { id:id, method:mth };
+  }
+
+  function resolveTmdbId(){
+    var card = getCardFromActivity();
+    if (card.id && card.method){
+      if (DEBUG) noty('TMDB from Activity: ' + card.method + ' #' + card.id);
+      return Promise.resolve(card);
     }
-    if (!method){
-      var m2 = h.match(/[?&]method=(movie|tv)/); if (m2) method = m2[1];
+    // fallback: TMDB search
+    var titles = extractTitles();
+    var year   = extractYear();
+
+    function tryMovie(q){
+      return tmdbApi('search/movie', { query:q, include_adult:false, year:year||undefined, language:'ru-RU' })
+        .then(function(res){ var r=(res&&res.results)||[]; return r.length ? {method:'movie', id:r[0].id} : null; })
+        .catch(function(){ return null; });
     }
-    if (!method) method = 'movie'; // дефолт
-    return { id: id, method: method };
+    function tryTV(q){
+      return tmdbApi('search/tv', { query:q, include_adult:false, first_air_date_year:year||undefined, language:'ru-RU' })
+        .then(function(res){ var r=(res&&res.results)||[]; return r.length ? {method:'tv', id:r[0].id} : null; })
+        .catch(function(){ return null; });
+    }
+    function tryMulti(q){
+      return tmdbApi('search/multi', { query:q, include_adult:false, language:'ru-RU' })
+        .then(function(res){
+          var r=(res&&res.results)||[];
+          for (var i=0;i<r.length;i++){
+            if (r[i].media_type==='movie' || r[i].media_type==='tv') return {method:r[i].media_type, id:r[i].id};
+          }
+          return null;
+        })
+        .catch(function(){ return null; });
+    }
+
+    // перебираем названия: movie -> tv -> multi
+    var chain = Promise.resolve(null);
+    titles.forEach(function(q){
+      chain = chain.then(function(found){
+        if (found) return found;
+        if (DEBUG) noty('TMDB search «'+q+'»');
+        return tryMovie(q).then(function(res){ return res || tryTV(q); })
+                          .then(function(res){ return res || tryMulti(q); });
+      });
+    });
+
+    return chain.then(function(found){
+      if (found){ if (DEBUG) noty('TMDB resolved: '+found.method+' #'+found.id); return found; }
+      throw 'tmdb-not-found';
+    });
   }
 
   /*** Поиск секции «Актёры» ***/
@@ -196,97 +284,69 @@
     return fetchJSON(url, {'accept':'application/json','X-API-KEY':DEV_API_KEY});
   }
 
-  /*** Главная логика: получаю imdb_id из TMDB, дальше KP ***/
+  /*** Главный поток ***/
   function runOnce(){
     injectCssOnce();
 
-    // 1) id+method карточки
-    var card = getCurrentCard();
-    if (!card.id){
-      noty('KP: не смогла определить TMDB id');
-      return;
-    }
-    noty('TMDB: '+card.method+' #'+card.id);
+    resolveTmdbId().then(function(found){
+      // 1) берём imdb_id у TMDB
+      return tmdbApi(found.method + '/' + found.id + '/external_ids', {}).then(function(json){
+        var imdb = json && (json.imdb_id || json.imdbId);
+        if (!imdb){ noty('TMDB: imdb_id не найден'); return null; }
+        noty('IMDb: ' + imdb);
+        return { imdb: imdb };
+      });
+    }).then(function(state){
+      if (!state || !state.imdb) return;
 
-    // 2) imdb через встроенный прокси Лампы
-    if (!window.Lampa || !Lampa.TMDB || typeof Lampa.TMDB.api !== 'function'){
-      noty('KP: нет Lampa.TMDB.api — не смогу взять imdb_id');
-      return;
-    }
-
-    Lampa.TMDB.api(card.method + '/' + card.id + '/external_ids', {}, function(json){
-      var imdb = json && (json.imdb_id || json.imdbId);
-      if (!imdb){
-        noty('TMDB: imdb_id не найден');
-        return;
-      }
-      noty('IMDb: ' + imdb);
-
-      // 3) DEV → kpId + persons
-      dev_byImdb(imdb).then(function(r){
+      // 2) DEV → kpId/persons
+      return dev_byImdb(state.imdb).then(function(r){
         if (!r.ok) throw r;
         var doc = r.data && r.data.docs && r.data.docs[0];
         var kpId = doc && (doc.kpId || doc.id);
         var devPersons = mapActorsFromDEV(doc && doc.persons || []);
 
         if (kpId){
-          // 3a) staff по kpId (предпочтительно)
+          // 3) staff от KPU предпочтительно
           return kpu_staff(kpId).then(function(rr){
             if (rr.ok){
               var mapped = mapActorsFromKPU(rr.data || []);
-              if (mapped.length){
-                replaceActorsSection(mapped, 'KP Unofficial');
-                return;
-              }
+              if (mapped.length){ replaceActorsSection(mapped, 'KP Unofficial'); return; }
             }
-            // 3b) fallback: DEV persons
-            if (devPersons.length){
-              replaceActorsSection(devPersons, 'Кинопоиск DEV');
-              return;
-            }
+            if (devPersons.length){ replaceActorsSection(devPersons, 'Кинопоиск DEV'); return; }
             noty('KP: не нашла актёров — TMDb остаётся');
           });
         } else {
-          // kpId нет — используем DEV persons, если есть
-          if (devPersons.length){
-            replaceActorsSection(devPersons, 'Кинопоиск DEV');
-            return;
-          }
-          // иногда DEV по imdb не присылает persons в списочном методе — добиваем full
+          if (devPersons.length){ replaceActorsSection(devPersons, 'Кинопоиск DEV'); return; }
+          // добивка, если списочный метод DEV не вернул persons
           if (doc && (doc.id || doc.kpId)){
             return dev_full(doc.id || doc.kpId).then(function(fr){
               if (!fr.ok) throw fr;
               var mapped2 = mapActorsFromDEV(fr.data && fr.data.persons || []);
-              if (mapped2.length){
-                replaceActorsSection(mapped2, 'Кинопоиск DEV');
-              } else {
-                noty('KP: не нашла актёров — TMDb остаётся');
-              }
+              if (mapped2.length){ replaceActorsSection(mapped2, 'Кинопоиск DEV'); }
+              else noty('KP: не нашла актёров — TMDb остаётся');
             });
-          } else {
-            noty('KP: не нашла актёров — TMDb остаётся');
           }
+          noty('KP: не нашла актёров — TMDb остаётся');
         }
-      }).catch(function(err){
-        noty('DEV ошибка: ' + (err && (err.status||err.error||'')));
       });
-
-    }, function(){
-      noty('TMDB: external_ids ошибка');
+    }).catch(function(err){
+      if (DEBUG) noty('Ошибка цепочки: '+(err&&err.toString?err.toString():String(err)));
     });
   }
 
   /*** Инициализация ***/
   function onFull(e){
     if(!e||!e.type) return;
-    if(e.type==='build'||e.type==='open'||e.type==='complite'){ setTimeout(runOnce, 200); }
+    if(e.type==='build'||e.type==='open'||e.type==='complite'){ setTimeout(runOnce, 220); }
   }
   function subscribe(){
     if(typeof window==='undefined'||typeof window.Lampa==='undefined'||!window.Lampa.Listener) return false;
     window.Lampa.Listener.follow('full', onFull);
-    setTimeout(runOnce, 500); // если карточка уже открыта
+    setTimeout(runOnce, 600); // если карточка уже открыта
     return true;
   }
-  (function wait(i){ i=i||0; if(subscribe()) return; if(i<200) setTimeout(function(){wait(i+1)},200); else setTimeout(runOnce,700); })();
+  (function wait(i){ i=i||0; if(subscribe()) return; if(i<200) setTimeout(function(){wait(i+1)},200); else setTimeout(runOnce,800); })();
 
 })();
+
