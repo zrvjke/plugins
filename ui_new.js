@@ -1,10 +1,11 @@
 /**
  * Lampa plugin: Hide Details Noise
  *  - Movies: hide HH:MM in details line
- *  - Series: hide Seasons/Episodes + "Next … / Days left: N"
- *  - Comments: hide entire comments section (by heading, by classes, and between Actors → (Recommendations|Collection))
+ *  - Series: hide Seasons/Episodes in details line + "Next … / Days left: N"
+ *  - Hide Comments section (between Actors → Recommendations/Collection or by heading/classes)
+ *  - Hide Seasons block (the big section with season cards, e.g. "Сезон 5") on series pages
  *
- * Version: 1.6.4 (ASCII-safe, ES5)
+ * Version: 1.7.0 (ASCII-safe, ES5)
  * Author: Roman + ChatGPT
  */
 
@@ -178,7 +179,6 @@
     return false;
   }
 
-  // 1) remove by heading (strongest)
   function killCommentsByHeading(root){
     var scope = root || document;
     var heads = scope.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p');
@@ -189,14 +189,10 @@
       if (RE_COMM_HEAD.test(t)){
         section = climbToSection(h, 10);
         hideNode(section);
-        // sometimes heading and list are siblings
-        sib = h.nextElementSibling;
-        if (sib) hideNode(sib);
+        sib = h.nextElementSibling; if (sib) hideNode(sib);
       }
     }
   }
-
-  // 2) remove everything between Actors → first of (Recommendations|Collection)
   function killBetweenActorsAndNext(root){
     var scope = root || document;
     var hActors = findFirstHeading(RE_ACTORS, scope);
@@ -205,47 +201,72 @@
     var hNext   = hRecs || hColl;
 
     if (!hActors && !hNext){
-      // fallback: nuke any obvious comment containers
       var any = scope.querySelectorAll(COMM_CLASS_SELECTOR), i;
       for (i=0;i<any.length;i++) hideNode(any[i]);
       return;
     }
-
     if (!hNext){
-      // no next section found — still try to hide all comment containers globally
       var any2 = scope.querySelectorAll(COMM_CLASS_SELECTOR), k;
       for (k=0;k<any2.length;k++) hideNode(any2[k]);
       return;
     }
-
     var secActors = hActors ? climbToSection(hActors, 10) : null;
     var secNext   = climbToSection(hNext, 10);
 
-    // go left from "next" until reach actors; hide comment-like nodes
     var cur = secNext.previousElementSibling, guard=0;
     while (cur && guard++<80){
       if (secActors && cur===secActors) break;
       if (looksLikeComments(cur)) { hideNode(cur); cur = cur.previousElementSibling; continue; }
-      // hide empty spacers
       if (textOf(cur)==='' && (!cur.children || cur.children.length<=1)) { hideNode(cur); cur = cur.previousElementSibling; continue; }
       break;
     }
   }
-
-  // 3) class-based fallback
   function killByClasses(root){
     var scope = root || document;
     var nodes = scope.querySelectorAll(COMM_CLASS_SELECTOR);
     var i; for (i=0;i<nodes.length;i++) hideNode(nodes[i]);
   }
-
   function killAllComments(root){
     killCommentsByHeading(root);
     killBetweenActorsAndNext(root);
     killByClasses(root);
   }
 
-  // CSS safety net
+  // ---------- seasons section killer (big seasons list) ----------
+  // Match headings like "Сезон", "Сезон 5", "Сезоны", "Seasons", "Season 3"
+  var RE_SEASONS_HEAD = /^(?:\\u0441\\u0435\\u0437\\u043e\\u043d(?:\\s*\\d+)?|\\u0441\\u0435\\u0437\\u043e\\u043d\\u044b(?:\\s*\\d+)?|seasons?(?:\\s*\\d+)?)$/i;
+
+  // Climb up from a heading to a container node that likely wraps the whole section
+  function sectionFromHead(head, maxUp){
+    var node = head, steps = 0; maxUp = maxUp || 10;
+    while (node && steps++ < maxUp){
+      // choose a parent that has siblings (i.e., is a section) and at least 2 children
+      if (node.parentElement && (node.previousElementSibling || node.nextElementSibling) && node.children && node.children.length >= 1) {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return head.parentElement || head;
+  }
+
+  function hideSeasonsSections(root){
+    var scope = root || document;
+    var nodes = scope.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p');
+    var i, el, t, sec, sib;
+    for (i=0;i<nodes.length;i++){
+      el = nodes[i]; t = norm(textOf(el));
+      if (!t) continue;
+      if (RE_SEASONS_HEAD.test(t)){
+        // это заголовок секции сезонов, прячем обёртку
+        sec = sectionFromHead(el, 10);
+        hideNode(sec);
+        // если список сезонов вынесен в соседний узел — спрячем и его
+        sib = el.nextElementSibling; if (sib) hideNode(sib);
+      }
+    }
+  }
+
+  // ---------- CSS safety net ----------
   function injectCssOnce(){
     if (document.getElementById('hds-comments-css')) return;
     var style = document.createElement('style');
@@ -259,7 +280,7 @@
     document.head.appendChild(style);
   }
 
-  // root observer
+  // ---------- root observer ----------
   var rootObserved=false;
   function ensureRootObserver(){
     if (rootObserved || !document.body) return;
@@ -267,7 +288,11 @@
       if (pend) return; pend=true;
       setTimeout(function(){
         pend=false;
+        // details cleanup
+        scanDetails(document);
+        // comments + seasons sections
         killAllComments(document);
+        hideSeasonsSections(document);
         injectCssOnce();
       },50);
     });
@@ -283,6 +308,7 @@
         scanDetails(document);
         attachDetailsObservers(document);
         killAllComments(document);
+        hideSeasonsSections(document);
         injectCssOnce();
         ensureRootObserver();
       },50);
@@ -295,6 +321,7 @@
       scanDetails(document);
       attachDetailsObservers(document);
       killAllComments(document);
+      hideSeasonsSections(document);
       injectCssOnce();
       ensureRootObserver();
     },200);
@@ -308,10 +335,10 @@
       scanDetails(document);
       attachDetailsObservers(document);
       killAllComments(document);
+      hideSeasonsSections(document);
       injectCssOnce();
       ensureRootObserver();
     },200);
   })();
 
 })();
-
