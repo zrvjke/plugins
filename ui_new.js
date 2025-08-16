@@ -42,7 +42,10 @@
      */
     function isDurationText(text) {
         if (!text) return false;
-        var lower = text.trim().toLowerCase();
+        var trimmed = text.trim();
+        var lower = trimmed.toLowerCase();
+        // Direct HH:MM or H:MM format (e.g. 02:14, 1:05) or HH:MM:SS format indicates a duration
+        if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(trimmed)) return true;
         var prefixes = ['РІСЂРµРјСЏ', 'РґР»РёС‚РµР»СЊРЅРѕСЃС‚СЊ', 'РїСЂРѕРґРѕР»Р¶РёС‚РµР»СЊРЅРѕСЃС‚СЊ', 'runtime', 'duration'];
         for (var i = 0; i < prefixes.length; i++) {
             if (lower.startsWith(prefixes[i])) return true;
@@ -67,8 +70,8 @@
             try {
                 qKey = (Lampa.Lang.translate('player_quality') || '').toLowerCase();
             } catch (e) { qKey = ''; }
-            var seasonPrefixes = ['СЃРµР·РѕРЅ', 'СЃРµР·РѕРЅС‹', 'seasons', 'season'];
-            var episodePrefixes = ['СЃРµСЂРёРё', 'СЃРµСЂРёСЏ', 'episodes', 'episode'];
+            var seasonPrefixes = ['СЃРµР·РѕРЅ', 'СЃРµР·РѕРЅС‹', 'СЃРµР·РѕРЅРѕРІ', 'СЃРµР·.', 'seasons', 'season'];
+            var episodePrefixes = ['СЃРµСЂРёРё', 'СЃРµСЂРёР№', 'СЃРµСЂРёСЏ', 'СЃРµСЂ.', 'episodes', 'episode'];
             var selectors = [
                 '.full-start__info span',
                 '.full-start-new__info span',
@@ -113,6 +116,34 @@
         } catch (err) {
             // Ignore errors during removal
         }
+    }
+
+    /**
+     * After removing info lines, this function cleans up any leading bullet
+     * separators that might remain as the first visible node in the info
+     * container. Without this, a stray bullet could appear at the beginning
+     * of the info row when all preceding fields have been removed.
+     */
+    function cleanLeadingBullets() {
+        var containers = document.querySelectorAll('.full-start__info, .full-start-new__info, .full-descr__info');
+        containers.forEach(function (container) {
+            var nodes = Array.from(container.childNodes);
+            for (var i = 0; i < nodes.length; i++) {
+                var node = nodes[i];
+                if (node.nodeType === Node.TEXT_NODE && node.textContent.trim() === '') continue;
+                var text = '';
+                if (node.nodeType === Node.TEXT_NODE) {
+                    text = node.textContent.trim();
+                } else if (node.nodeType === Node.ELEMENT_NODE) {
+                    text = (node.textContent || '').trim();
+                }
+                if (text === 'вЂў' || text === 'В·' || text === '.') {
+                    node.remove();
+                }
+                // Stop after first non-empty node regardless of removal or not
+                break;
+            }
+        });
     }
 
     /**
@@ -165,6 +196,8 @@
         if (event && event.type === 'complite') {
             setTimeout(function () {
                 removeInfoLines();
+                // Clean any leading bullets after line removal
+                cleanLeadingBullets();
                 styleGenres();
             }, 200);
         }
