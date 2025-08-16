@@ -19,7 +19,7 @@
   var DEV_API_KEY = 'KS9Z0SJ-5WCMSN8-MA3VHZK-V1ZFH4G';            // твой DEV
   var MAX_ACTORS  = 24;
   var CACHE_TTL   = 7 * 24 * 3600e3;                              // 7 дней
-  var DEBUG       = false;                                        // true — включить Lampa.Noty
+  var DEBUG       = true;                                        // true — включить Lampa.Noty
 
   var KPU_BASE = 'https://kinopoiskapiunofficial.tech';
   var DEV_BASE = 'https://api.kinopoisk.dev';
@@ -320,4 +320,5 @@
   (function wait(i){ i=i||0; if(subscribe()) return; if(i<200) setTimeout(function(){wait(i+1)},200); else setTimeout(runOnce,500); })();
 
 })();
+
 
