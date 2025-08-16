@@ -1,135 +1,184 @@
 /**
- * Lampa plugin: Remove movie duration from the info line
+ * Lampa plugin: Remove movie duration & series tokens (seasons/episodes)
+ * Version: 1.1.0
+ * Author: Roman + ChatGPT
  *
- * This plugin strips the runtime (formatted like 02:14) from the
- * information line that appears above the list of genres on a movie's
- * detail page.  In the stock interface the runtime is shown on the
- * left of the genre list and separated from the following values by a
- * dot or bullet.  The modified version of the вЂњInterface MODвЂќ plugin
- * by bywolf88 moves the runtime to the end of the line and reвЂ‘formats
- * it.  Our goal is different: we do not reposition or reformat the
- * runtime at allвЂ”we simply remove the runtime element entirely,
- * along with its adjacent separator.  This keeps the rest of the
- * details intact while omitting the length of the film.
+ * Удаляет:
+ *  - у фильмов: токен времени HH:MM (напр., 02:14) + соседний разделитель;
+ *  - у сериалов: "Сезоны: N" / "Серии: M" (и их варианты на RU/EN) + соседние разделители.
  *
- * The implementation relies on Lampa's event system.  When the
- * 'full' view finishes loading (the `complite` event) we scan the
- * details container for spans whose text matches a time in HH:MM
- * format and remove them.  We also remove the preceding or following
- * separator element (`full-start__split`/`full-start-new__split` or a
- * span containing a dot/bullet) to avoid leaving a stray dot at the
- * beginning of the genre list.  The plugin is selfвЂ‘contained and
- * activates itself automatically once Lampa has loaded.
+ * Работает на старой и новой вёрстке (full-start*, full-start-new*),
+ * страхуется от повторных дорисовок (MutationObserver) и реагирует на события 'full'.
  */
 
 (function () {
-    'use strict';
+  'use strict';
 
-    /**
-     * Remove runtime spans and their adjacent separators from the
-     * details section.  This function will search both the legacy
-     * (fullвЂ‘start__details) and the new (fullвЂ‘startвЂ‘new__details)
-     * containers and perform the removal.
-     */
-    function removeDurationFromDetails() {
-        // Collect all potential detail containers
-        var $containers = $('.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info');
-        $containers.each(function () {
-            var $container = $(this);
-            // Iterate over all span elements within the container
-            $container.find('span').each(function () {
-                var $span = $(this);
-                var text = $span.text().trim();
-                // Match times of the form "02:14" or "2:05"
-                if (/^\d{1,2}:\d{2}$/.test(text)) {
-                    // Attempt to remove a separator before or after the time
-                    var $prev = $span.prev();
-                    var $next = $span.next();
-                    // Separator spans often have class full-start__split or
-                    // full-start-new__split.  Sometimes the separator is
-                    // simply a dot (".") or bullet ("вЂў") in its own span.
-                    var isSeparator = function ($el) {
-                        if (!$el || !$el.length) return false;
-                        var cls = $el.attr('class') || '';
-                        var txt = ($el.text() || '').trim();
-                        return /full-start.*__split/.test(cls) || /^[\.В·вЂў|]$/.test(txt);
-                    };
-                    // Remove the separator either before or after the time
-                    if (isSeparator($prev)) {
-                        $prev.remove();
-                    } else if (isSeparator($next)) {
-                        $next.remove();
-                    }
-                    // Remove the time span itself
-                    $span.remove();
-                }
-            });
-        });
+  var SELECTORS = '.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info';
+
+  // ---------- helpers --------------------------------------------------------
+
+  function textOf(node) {
+    return (node && (node.textContent || node.innerText) || '').trim();
+  }
+
+  function isTimeToken(s) {
+    return /^\d{1,2}:\d{2}$/.test((s || '').trim());
+  }
+
+  // Разделитель: фирменные классы Lampa или одиночные символы . • · |
+  function isSeparatorNode(el) {
+    if (!el) return false;
+    var cls = (el.className || '') + '';
+    var txt = textOf(el);
+    return /full-start.*__split/.test(cls) || /^[.\u2022\u00B7|]$/.test(txt);
+  }
+
+  // RU/EN варианты "Сезоны/Сезон/Сезонов" / "Серии/Серия/Серий" / "Season(s)" / "Episode(s)"
+  function isSeriesLabelToken(txt) {
+    if (!txt) return false;
+    var t = txt.toLowerCase();
+    // допускаем двоеточие на конце
+    if (/(^|\s)(сезон(ы|ов)?|серия|серии|серий)\s*:?$/.test(t)) return true;
+    if (/(^|\s)(season|seasons|episode|episodes)\s*:?$/.test(t)) return true;
+    return false;
+  }
+
+  // Единичный спан, где уже вместе "Сезоны: 3" / "Seasons 3"
+  function isSeriesInlineToken(txt) {
+    if (!txt) return false;
+    var t = txt.toLowerCase();
+    // RU
+    if (/^сезон(ы|ов)?\s*:?\s*\d+$/i.test(t)) return true;
+    if (/^сер(ия|ии|ий)\s*:?\s*\d+$/i.test(t)) return true;
+    // EN
+    if (/^season(s)?\s*:?\s*\d+$/i.test(t)) return true;
+    if (/^episode(s)?\s*:?\s*\d+$/i.test(t)) return true;
+    return false;
+  }
+
+  function isPureNumber(txt) {
+    return /^\d+$/.test((txt || '').trim());
+  }
+
+  function removeNode(node) { if (node && node.parentNode) node.parentNode.removeChild(node); }
+
+  // Удалить разделитель слева или справа от указанного узла (если есть)
+  function removeAdjacentSeparator(node) {
+    if (!node) return;
+    var prev = node.previousElementSibling;
+    var next = node.nextElementSibling;
+    if (isSeparatorNode(prev)) { removeNode(prev); return; }
+    if (isSeparatorNode(next)) { removeNode(next); return; }
+  }
+
+  // Если после удалений остался разделитель в начале контейнера — подчистим
+  function cleanupLeadingSeparators(container) {
+    if (!container) return;
+    var first = container.firstElementChild;
+    while (first && isSeparatorNode(first)) {
+      removeNode(first);
+      first = container.firstElementChild;
     }
+  }
 
-    /**
-     * Attach a MutationObserver to the provided element to ensure that
-     * newly added spans matching the runtime format are removed.  This
-     * observer reвЂ‘applies the removal logic whenever the children of
-     * the details container change (e.g. when Lampa updates the info
-     * panel asynchronously).
-     *
-     * @param {HTMLElement} element The container to observe
-     */
-    function observeDetails(element) {
-        if (!element || !element.nodeType) return;
-        var observer = new MutationObserver(function (mutations) {
-            mutations.forEach(function () {
-                removeDurationFromDetails();
-            });
-        });
-        observer.observe(element, { childList: true, subtree: true });
-    }
+  // ---------- core: pass over container -------------------------------------
 
-    /**
-     * Handler for the 'full' view completion event.  When a movie or
-     * series detail page finishes loading, we invoke the removal and
-     * attach observers to its details containers so that dynamic
-     * updates cannot restore the removed runtime.
-     *
-     * @param {Object} data Event data from Lampa.Listener.follow
-     */
-    function handleFullEvent(data) {
-        if (!data || data.type !== 'complite') return;
-        // Slight delay to allow the DOM to finish rendering
-        setTimeout(function () {
-            removeDurationFromDetails();
-            // Attach observers to each details container
-            var containers = document.querySelectorAll('.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info');
-            containers.forEach(function (el) {
-                observeDetails(el);
-            });
-        }, 100);
-    }
+  function stripTokensIn(container) {
+    if (!container) return;
 
-    /**
-     * Initialise the plugin once Lampa is available.  We poll for
-     * Lampa.Listener to appear on the global object and then register
-     * our event handler.  This avoids race conditions where the
-     * plugin is loaded before Lampa itself.
-     */
-    function waitForLampa() {
-        if (typeof window !== 'undefined' && typeof window.Lampa !== 'undefined' && window.Lampa.Listener && typeof window.Lampa.Listener.follow === 'function') {
-            // Register the handler for 'full' events
-            window.Lampa.Listener.follow('full', handleFullEvent);
-            // Also perform an initial removal in case the plugin loads
-            // after the first detail page has already rendered
-            setTimeout(function () {
-                removeDurationFromDetails();
-            }, 200);
+    // Собираем к удалению, чтобы не путаться со сменой соседей во время прохода
+    var toRemove = new Set();
+    var toCleanLeading = false;
+
+    var spans = container.querySelectorAll('span');
+    for (var i = 0; i < spans.length; i++) {
+      var span = spans[i];
+      if (!span || toRemove.has(span)) continue;
+
+      var txt = textOf(span);
+
+      // 1) Фильмы: время HH:MM
+      if (isTimeToken(txt)) {
+        var prev = span.previousElementSibling;
+        var next = span.nextElementSibling;
+        if (isSeparatorNode(prev)) toRemove.add(prev);
+        else if (isSeparatorNode(next)) toRemove.add(next);
+        toRemove.add(span);
+        toCleanLeading = true;
+        continue;
+      }
+
+      // 2) Сериалы: inline-токен ("Сезоны: 3" / "Seasons 3" / "Серии 8")
+      if (isSeriesInlineToken(txt)) {
+        removeAdjacentSeparator(span); // сразу, чтобы корректно убирать крайние точки
+        toRemove.add(span);
+        toCleanLeading = true;
+        continue;
+      }
+
+      // 3) Сериалы: раздельные спаны "Сезоны:" + "3"
+      if (isSeriesLabelToken(txt)) {
+        // Сепаратор слева от метки
+        var leftSep = span.previousElementSibling;
+        if (isSeparatorNode(leftSep)) toRemove.add(leftSep);
+
+        // Число может быть в следующем спане
+        var num = span.nextElementSibling;
+        if (num && isPureNumber(textOf(num))) {
+          // Сепаратор справа от числа
+          var rightSep = num.nextElementSibling;
+          if (isSeparatorNode(rightSep)) toRemove.add(rightSep);
+          toRemove.add(num);
         } else {
-            // Try again shortly
-            setTimeout(waitForLampa, 200);
+          // Если числа нет, попробуем убрать разделитель справа от метки
+          var rightSep2 = span.nextElementSibling;
+          if (isSeparatorNode(rightSep2)) toRemove.add(rightSep2);
         }
+
+        toRemove.add(span);
+        toCleanLeading = true;
+        continue;
+      }
     }
 
-    // Begin waiting for Lampa to be ready.  This call is executed
-    // immediately when the plugin script is evaluated.
-    waitForLampa();
-})();
+    // Удаляем накопленное
+    toRemove.forEach(removeNode);
+
+    if (toCleanLeading) cleanupLeadingSeparators(container);
+  }
+
+  function scan(root) {
+    var scope = root || document;
+    var nodes = scope.querySelectorAll(SELECTORS);
+    nodes.forEach(stripTokensIn);
+  }
+
+  // ---------- observers (без дублей) ----------------------------------------
+
+  var observed = new WeakSet();
+
+  function observeDetails(element) {
+    if (!element || observed.has(element)) return;
+
+    var pending = false;
+    var obs = new MutationObserver(function (muts) {
+      // Лёгкий дебаунс, чтобы дождаться пачки мутаций
+      if (pending) return;
+      pending = true;
+      requestAnimationFrame(function () {
+        setTimeout(function () {
+          pending = false;
+          stripTokensIn(element);
+        }, 0);
+      });
+    });
+
+    obs.observe(element, { childList: true, subtree: true });
+    observed.add(element);
+  }
+
+  function attachObserversIn(root) {
+    var nodes = (root || document).querySelecto
+
 
