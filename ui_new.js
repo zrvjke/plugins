@@ -1,215 +1,169 @@
-/*
- * Lampa Plugin: Hide quality labels and add a semiвЂ‘transparent backdrop to genres
- *
- * This plugin removes quality/source tags (WEBRip, TS, BDRip, 4K, etc.)
- * from movie/series cards and the information panel, then applies a
- * uniform semiвЂ‘transparent black background to each genre listed on
- * the detail page.  The genres are detected from the movie object
- * provided by Lampa where possible; if unavailable, text is split on
- * commas in the information panel itself.  Each genre is wrapped
- * separately when multiple genres are listed together.  The goal is
- * similar to the genre styling in ui_new.js but uses a single
- * semiвЂ‘transparent background (no perвЂ‘genre colours) like the
- * RottenВ Tomatoes rating blocks (rgba(0,0,0,0.4))гЂђ271215840515611вЂ L59-L64гЂ‘.
- */
+// Lampa plugin: Hide quality information and style genres on detail cards.
+//
+// This plugin is inspired by the Interface MOD and RT Rating plugins. It hides
+// quality markers such as 4K, WEBвЂ‘DL, HDRip, etc. from the movie/series
+// information panel in the detail view (to the right of the poster) and
+// applies a semiвЂ‘transparent background to genre and tag elements. Unlike
+// previous attempts, this script avoids interfering with the list view and
+// doesnвЂ™t touch the comments section. It uses only the necessary Lampa APIs
+// and works in both TMDB and CUB sources, provided the markup follows
+// LampaвЂ™s standard naming conventions.
 
 (function () {
     'use strict';
-    // Ensure the plugin only runs once and only when Lampa is available
-    if (!window.Lampa || window.semitransparentGenrePluginInjected) return;
-    window.semitransparentGenrePluginInjected = true;
+    // Ensure Lampa exists and avoid multiple injections
+    if (!window.Lampa || window.hideQualityGenrePluginInjected) return;
+    window.hideQualityGenrePluginInjected = true;
 
     /**
-     * Inject a stylesheet to globally hide quality/source labels on cards.
-     * Quality badges are contained in `.card__quality` elements and
-     * occasionally appear as a modifier on `.card__view` (the preview
-     * overlay).  This CSS hides them everywhere in the interface.
+     * Detect if a piece of text looks like a quality indicator (e.g., 4K, WEBвЂ‘DL,
+     * HDRip, TS). Returns false for simple numbers (ratings) and for the вЂњTVвЂќ
+     * label used on series cards.
+     *
+     * @param {string} text The text to evaluate
+     * @returns {boolean} True if text is likely a quality string
      */
-    function injectHideQualityStyle() {
-        if (document.getElementById('semigenre-hide-quality-style')) return;
-        var style = document.createElement('style');
-        style.id = 'semigenre-hide-quality-style';
-        style.textContent = [
-            '/* Hide quality/source labels in movie/series cards */',
-            '.card__quality,',
-            '.card__view--quality {',
-            '    display: none !important;',
-            '}',
-            ''
-        ].join('\n');
-        document.head.appendChild(style);
+    function isQualityText(text) {
+        if (!text) return false;
+        var t = text.trim().toUpperCase();
+        if (!t) return false;
+        // Ignore pure numeric strings and the TV badge
+        if (/^\d+(\.\d+)?$/.test(t) || t === 'TV') return false;
+        // Known quality tokens
+        var tokens = [
+            '4K', '8K', 'HD', 'FHD', 'FULLHD', 'UHD', 'BD', 'BDRIP', 'HDRIP',
+            'HDR', 'WEBDL', 'WEB-DL', 'WEB', 'WEBRIP', 'HDTV', 'TS', 'CAM',
+            'CAMRIP', 'DVDRIP', 'DVDSCR', 'DVD', '360P', '480P', '720P',
+            '1080P', '1440P', '2160P', 'HDR10'
+        ];
+        if (tokens.indexOf(t) !== -1) return true;
+        // Also match tokens embedded in longer strings (e.g., вЂњBluRay 1080pвЂќ)
+        return /(BLURAY|HDRIP|WEB\s?DL|WEBRIP|HDTV|DVDRIP|TS|CAM|4K|8K|2160P|1080P|720P|360P|480P)/i.test(t);
     }
 
     /**
-     * Regular expression used to detect quality or source descriptors
-     * embedded in spans.  Matches common tags such as WEBRip, HDRip,
-     * BluRay, BDRip, TS, CAM, 4K, etc.  Any span matching this pattern
-     * will be removed from the information panel entirely.
+     * Remove quality information from the detail view. This function hides the
+     * `.tag--quality` element near the poster and removes spans in the info
+     * section that represent quality lines (e.g., вЂњQuality: WEBвЂ‘DLвЂќ).
      */
-    var QUALITY_PATTERN = /\b(?:WEB\s?Rip|WEB|HDRip|HDTV|BluRay|DVDRip|BDRip|TS|CAM|4K|8K|2160p|1080p|720p)\b/i;
-
-    /**
-     * Apply a uniform semiвЂ‘transparent style to a jQuery element
-     * representing a single genre.  The background colour mirrors
-     * RottenВ Tomatoes blocks (`rgba(0,0,0,0.4)`)гЂђ271215840515611вЂ L59-L64гЂ‘ and the text is white.
-     *
-     * @param {jQuery} $el The element to style
-     */
-    function applyGenreStyle($el) {
-        $el.css({
-            'background-color': 'rgba(0, 0, 0, 0.4)',
-            'color': '#fff',
-            'border-radius': '0.3em',
-            'padding': '0.2em 0.5em',
-            'white-space': 'nowrap',
-            'margin-right': '0.2em'
-        });
-    }
-
-    /**
-     * Style the genres in the details panel.  Removes quality tags,
-     * builds a unique list of genres from the movie object (or
-     * fallback parsing), then wraps/composes spans so that each
-     * individual genre receives a semiвЂ‘transparent backdrop.  NonвЂ‘genre
-     * items (such as ratings or duration) are left untouched.
-     *
-     * @param {jQuery} $details  The container holding detail spans
-     * @param {Object} movie     The movie object from Lampa
-     */
-    function styleGenres($details, movie) {
-        if (!$details || !$details.length) return;
-        // 1. Remove quality/source tags from the details panel
-        $details.find('span').each(function () {
-            var $span = window.$(this);
-            var txt = $span.text().trim();
-            if (QUALITY_PATTERN.test(txt)) {
-                $span.remove();
+    function removeQualityInfo() {
+        try {
+            // Remove the tag element near the poster
+            document.querySelectorAll('.tag--quality').forEach(function (el) {
+                el.remove();
+            });
+            // Determine the translated word for вЂњQualityвЂќ from LampaвЂ™s language API
+            var qKey = '';
+            try {
+                qKey = (Lampa.Lang.translate('player_quality') || '').toLowerCase();
+            } catch (e) {
+                qKey = '';
             }
-        });
-
-        // 2. Build a list of genres from the movie object if available
-        var genreList = [];
-        if (movie && movie.genres) {
-            if (Array.isArray(movie.genres)) {
-                genreList = movie.genres.map(function (g) { return String(g).trim(); });
-            } else if (typeof movie.genres === 'string') {
-                movie.genres.split(',').forEach(function (g) {
-                    var t = g.trim();
-                    if (t) genreList.push(t);
-                });
-            }
-        }
-
-        // 3. Fallback: if no genres available via movie object, parse spans
-        if (genreList.length === 0) {
-            $details.find('span').each(function () {
-                var text = window.$(this).text().trim();
+            // Remove info rows containing quality
+            var selectors = [
+                '.full-start__info span',
+                '.full-start-new__info span',
+                '.full-descr__info span'
+            ].join(',');
+            document.querySelectorAll(selectors).forEach(function (span) {
+                var text = (span.textContent || '').trim();
                 if (!text) return;
-                if (text.indexOf(',') !== -1) {
-                    text.split(',').forEach(function (part) {
-                        var trimmed = part.trim();
-                        if (trimmed && genreList.indexOf(trimmed) === -1) genreList.push(trimmed);
-                    });
-                } else if (genreList.indexOf(text) === -1) {
-                    genreList.push(text);
+                var lower = text.toLowerCase();
+                if ((qKey && lower.startsWith(qKey)) || lower.startsWith('quality') || lower.startsWith('РєР°С‡РµСЃС‚РІРѕ')) {
+                    span.remove();
+                    return;
+                }
+                if (isQualityText(text)) {
+                    span.remove();
                 }
             });
+        } catch (err) {
+            // Silently ignore any errors
         }
+    }
 
-        // 4. Iterate over spans and apply styling.  When multiple genres
-        //    appear in one span separated by commas, wrap each in its
-        //    own badge.  Only style spans whose text matches our genre
-        //    list to avoid altering nonвЂ‘genre details like year or
-        //    ratings.
-        $details.find('span').each(function () {
-            var $span = window.$(this);
-            var text = $span.text().trim();
+    /**
+     * Apply a semiвЂ‘transparent background to genre and tag elements. A new
+     * `.genre-badge` class is injected into the document to style these
+     * elements.
+     */
+    function styleGenres() {
+        // Inject CSS for genre badges if not already present
+        if (!document.getElementById('hide-quality-genre-style')) {
+            var styleEl = document.createElement('style');
+            styleEl.id = 'hide-quality-genre-style';
+            styleEl.textContent = [
+                '.genre-badge {',
+                '  background: rgba(0, 0, 0, 0.4);',
+                '  padding: 0.2em 0.5em;',
+                '  border-radius: 0.3em;',
+                '  color: #fff;',
+                '  margin-right: 0.3em;',
+                '  display: inline-block;',
+                '  font-size: 0.95em;',
+                '}',
+                '.full-descr__tags .tag-count {',
+                '  background: rgba(0, 0, 0, 0.4);',
+                '  border-radius: 0.3em;',
+                '  padding: 0.2em 0.5em;',
+                '  color: #fff;',
+                '}',
+            ].join('\n');
+            document.head.appendChild(styleEl);
+        }
+        // Tag candidate spans: no colon, no digits, and contain commas or pipes
+        var infoSpans = document.querySelectorAll(
+            '.full-start__info span, .full-start-new__info span, .full-descr__info span'
+        );
+        infoSpans.forEach(function (span) {
+            var text = (span.textContent || '').trim();
             if (!text) return;
-            if (text.indexOf(',') !== -1) {
-                var parts = text.split(',');
-                var $wrapper = window.$('<span></span>').css({
-                    'display': 'flex',
-                    'flex-wrap': 'wrap',
-                    'gap': '0.2em'
-                });
-                parts.forEach(function (part) {
-                    var trimmed = part.trim();
-                    if (!trimmed) return;
-                    var $badge = window.$('<span></span>').text(trimmed);
-                    applyGenreStyle($badge);
-                    $wrapper.append($badge);
-                });
-                $span.replaceWith($wrapper);
-            } else {
-                // Only style if the span text is recognised as a genre
-                // either via the movie object or by simple heuristics
-                var isGenre = false;
-                if (genreList.indexOf(text) !== -1) {
-                    isGenre = true;
-                } else {
-                    // Heuristic: treat as genre if it starts with a
-                    // Latin or Cyrillic letter and contains no digits.
-                    // Avoid using Unicode property escapes for wider
-                    // compatibility with older JavaScript engines.
-                    if (/^[A-Za-z\u0400-\u04FF][^\d]*$/.test(text)) {
-                        isGenre = true;
-                    }
-                }
-                if (isGenre) {
-                    applyGenreStyle($span);
-                }
+            if (text.indexOf(':') !== -1) return;
+            if (/\d/.test(text)) return;
+            if (text.indexOf(',') !== -1 || text.indexOf('|') !== -1) {
+                span.classList.add('genre-badge');
             }
+        });
+        // Tag counters in the tags section
+        document.querySelectorAll('.full-descr__tags .tag-count').forEach(function (el) {
+            el.classList.add('genre-badge');
         });
     }
 
     /**
-     * Initialise the plugin: hide quality tags, then hook into
-     * LampaвЂ™s `full` event to style genres on detail pages.  A
-     * MutationObserver hides any dynamically inserted quality tags.
+     * Handler for the `full` event. Once the detailed page is rendered, we wait
+     * briefly to ensure DOM elements are present, then apply our modifications.
+     *
+     * @param {Object} event Event data from Lampa.Listener.follow
      */
-    function init() {
-        injectHideQualityStyle();
-        // Hide existing quality badges immediately
-        window.$('.card__quality').hide();
-        // Listen for detail pages being built
-        Lampa.Listener.follow('full', function (e) {
-            if (!e || e.type !== 'complite' || !e.data || !e.data.movie) return;
-            var movie = e.data.movie;
-            var $root = window.$(e.object.activity.render());
-            var $details = $root.find(
-                '.full-start-new__details, .full-start__details, .full-start-new__info, .full-start__info'
-            );
-            if (!$details.length) {
-                // Fallback: some templates attach details to the title
-                $details = $root.find('.full-start-new__title, .full-start__title').parent();
-                if (!$details.length) $details = $root;
-            }
-            styleGenres($details, movie);
-        });
-        // Observe DOM mutations to hide newly added quality badges
-        var observer = new MutationObserver(function (mutations) {
-            mutations.forEach(function (mutation) {
-                Array.prototype.forEach.call(mutation.addedNodes, function (node) {
-                    if (!node || node.nodeType !== 1) return;
-                    var $node = window.$(node);
-                    if ($node.hasClass('card__quality')) {
-                        $node.hide();
-                    }
-                    $node.find('.card__quality').hide();
-                });
-            });
-        });
-        observer.observe(document.body, { childList: true, subtree: true });
+    function onFull(event) {
+        if (event && event.type === 'complite') {
+            setTimeout(function () {
+                removeQualityInfo();
+                styleGenres();
+            }, 200);
+        }
     }
 
-    // Run initialisation once the DOM and Lampa are ready.  We wait
-    // briefly because Lampa often finishes bootstrapping a little after
-    // DOMContentLoaded.
-    if (document.readyState === 'complete' || document.readyState === 'interactive') {
-        setTimeout(init, 500);
-    } else {
-        document.addEventListener('DOMContentLoaded', function () {
-            setTimeout(init, 500);
-        });
+    // Register the listener for detail pages
+    if (Lampa.Listener && typeof Lampa.Listener.follow === 'function') {
+        Lampa.Listener.follow('full', onFull);
+    }
+
+    // Optionally register plugin metadata. This ensures the plugin appears in
+    // LampaвЂ™s plugin list (when not loaded as a worker). Wrap in try/catch to
+    // avoid errors on older versions.
+    try {
+        if (Lampa.Plugin && typeof Lampa.Plugin.create === 'function') {
+            Lampa.Plugin.create({
+                name: 'Hide Quality & Style Genres',
+                version: '1.0.0',
+                description: 'Removes quality info on detail cards and applies a semiвЂ‘transparent background to genres.',
+                type: 'card',
+                icon: '\uD83D\uDCC4'
+            });
+        }
+    } catch (e) {
+        // Do nothing if registration fails
     }
 })();
