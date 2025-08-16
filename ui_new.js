@@ -68,28 +68,68 @@
     }
 
     /**
-     * Initialize the plugin by hooking into Lampa's event system.  We
-     * listen for the 'full' view to complete loading.  When that
-     * happens we schedule a short timeout to give the DOM time to
-     * render and then perform the removal.
+     * Attach a MutationObserver to the provided element to ensure that
+     * newly added spans matching the runtime format are removed.  This
+     * observer reвЂ‘applies the removal logic whenever the children of
+     * the details container change (e.g. when Lampa updates the info
+     * panel asynchronously).
+     *
+     * @param {HTMLElement} element The container to observe
      */
-    function initPlugin() {
-        // Guard against missing globals
-        if (typeof Lampa === 'undefined' || !Lampa.Listener) return;
-        Lampa.Listener.follow('full', function (data) {
-            if (data && data.type === 'complite') {
-                // Use a slight delay to ensure the DOM is ready
-                setTimeout(removeDurationFromDetails, 50);
-            }
+    function observeDetails(element) {
+        if (!element || !element.nodeType) return;
+        var observer = new MutationObserver(function (mutations) {
+            mutations.forEach(function () {
+                removeDurationFromDetails();
+            });
         });
+        observer.observe(element, { childList: true, subtree: true });
     }
 
-    // Some builds of Lampa expose an `appready` flag once initial
-    // startup completes.  If it's already ready we initialise
-    // immediately; otherwise we wait until the DOMContentLoaded event.
-    if (window.appready) {
-        initPlugin();
-    } else {
-        document.addEventListener('DOMContentLoaded', initPlugin);
+    /**
+     * Handler for the 'full' view completion event.  When a movie or
+     * series detail page finishes loading, we invoke the removal and
+     * attach observers to its details containers so that dynamic
+     * updates cannot restore the removed runtime.
+     *
+     * @param {Object} data Event data from Lampa.Listener.follow
+     */
+    function handleFullEvent(data) {
+        if (!data || data.type !== 'complite') return;
+        // Slight delay to allow the DOM to finish rendering
+        setTimeout(function () {
+            removeDurationFromDetails();
+            // Attach observers to each details container
+            var containers = document.querySelectorAll('.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info');
+            containers.forEach(function (el) {
+                observeDetails(el);
+            });
+        }, 100);
     }
+
+    /**
+     * Initialise the plugin once Lampa is available.  We poll for
+     * Lampa.Listener to appear on the global object and then register
+     * our event handler.  This avoids race conditions where the
+     * plugin is loaded before Lampa itself.
+     */
+    function waitForLampa() {
+        if (typeof window !== 'undefined' && typeof window.Lampa !== 'undefined' && window.Lampa.Listener && typeof window.Lampa.Listener.follow === 'function') {
+            // Register the handler for 'full' events
+            window.Lampa.Listener.follow('full', handleFullEvent);
+            // Also perform an initial removal in case the plugin loads
+            // after the first detail page has already rendered
+            setTimeout(function () {
+                removeDurationFromDetails();
+            }, 200);
+        } else {
+            // Try again shortly
+            setTimeout(waitForLampa, 200);
+        }
+    }
+
+    // Begin waiting for Lampa to be ready.  This call is executed
+    // immediately when the plugin script is evaluated.
+    waitForLampa();
 })();
+
