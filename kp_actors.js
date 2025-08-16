@@ -1,14 +1,18 @@
 /**
- * Lampa plugin: KP Cast via TMDB (v2.1.0 — fallback TMDB search)
+ * Lampa plugin: KP Cast (v2.2.0 — robust TMDB resolve + DEV fallback)
  * Автор: Рома + твоя девочка :)
  *
  * Алгоритм:
- *  1) Пытаюсь достать TMDB id и тип (movie/tv) из Activity или URL.
- *  2) Если id нет — через Lampa.TMDB.api делаю TMDB search (movie/tv/multi) по названию(+варианты) и году,
- *     выбираю первый подходящий результат → получаю exact id+type.
+ *  1) Пытаюсь взять TMDB id/type из Activity/URL.
+ *  2) Если нет — ищу в TMDB (movie→tv→multi) по нескольким названиям,
+ *     на ru-RU и en-US, мягко учитывая год.
  *  3) TMDB /external_ids → imdb_id.
- *  4) По imdb_id: api.kinopoisk.dev → kpId/persons; если kpId есть → staff с kinopoiskapiunofficial.tech.
- *  5) Если ничего — оставляю TMDb каст как есть.
+ *  4) По imdb_id: api.kinopoisk.dev → kpId/persons;
+ *     если kpId есть → kinopoiskapiunofficial.tech /v1/staff;
+ *     если staff пуст → persons из DEV.
+ *  5) Если TMDB не найден вообще → прямой поиск по DEV по названиям
+ *     → kpId → staff/persons (без IMDb).
+ *  6) Если совсем пусто — оставляю TMDb каст как есть.
  */
 
 (function () {
@@ -33,6 +37,10 @@
   function rm(n){ if(n&&n.parentNode) n.parentNode.removeChild(n); }
   function noty(m){ try{ if(DEBUG && window.Lampa && Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(m);}catch(e){} }
   function uniq(a){ var u=[],i; for(i=0;i<a.length;i++) if(a[i] && u.indexOf(a[i])<0) u.push(a[i]); return u; }
+  function pickYear(obj){
+    var s = (obj&& (obj.release_date || obj.first_air_date || '') ) + '';
+    var m = s.match(/\b(19|20)\d{2}\b/); return m ? parseInt(m[0],10) : 0;
+  }
 
   function fetchJSON(url, headers){
     return new Promise(function(resolve,reject){
@@ -64,41 +72,7 @@
   }
   function cset(key,val){ try{ localStorage.setItem(key, JSON.stringify({t:Date.now(), v:val})); }catch(e){} }
 
-  /*** Извлечение названий/года для поиска ***/
-  function extractTitles(){
-    var titles = [];
-    var titleEl = $('.full-title, .full-start__title, .full-start-new__title, .full-title-name, .full__title, h1, h2');
-    if (titleEl){
-      var raw = txt(titleEl);
-      if (raw){
-        var parts = raw.split('/');
-        if (parts.length>1){
-          titles.push(parts[0].trim());
-          titles.push(parts.slice(1).join('/').trim());
-        } else titles.push(raw.trim());
-      }
-    }
-    // оригинал/альт
-    var cand = $$('[class*="original"],[class*="orig"],[data-original]');
-    cand.forEach(function(n){ var t=txt(n); if(t) titles.push(t); });
-    // alt постера
-    var poster = $('img[alt], .full-poster img[alt], .full-start__left img[alt]');
-    if (poster && poster.alt) titles.push(poster.alt);
-    // подчистить и уникализировать
-    titles = uniq(titles.map(function(t){ return t.replace(/\s*\(\d{4}\)\s*$/,'').replace(/\s*\[\d{4}\]\s*$/,'').trim(); })
-                         .filter(function(t){ return t && t.length>0; }))
-             .slice(0,6);
-    if (DEBUG) noty('TMDB search titles → ' + titles.join(' | '));
-    return titles;
-  }
-  function extractYear(){
-    var year=''; var det=$(DETAILS);
-    if(det){ var spans=$$('span',det); for(var i=0;i<spans.length;i++){ var s=txt(spans[i]); if(/^\d{4}$/.test(s)){ year=s; break; } } }
-    if(!year && document.title){ var m=document.title.match(/\b(19|20)\d{2}\b/); if(m) year=m[0]; }
-    return year;
-  }
-
-  /*** TMDB helpers (через встроенный прокси Лампы) ***/
+  /*** TMDB proxy из Лампы ***/
   function tmdbApi(path, params){
     return new Promise(function(resolve,reject){
       if (!window.Lampa || !Lampa.TMDB || typeof Lampa.TMDB.api !== 'function'){
@@ -106,6 +80,68 @@
       }
       Lampa.TMDB.api(path, params || {}, function(json){ resolve(json||{}); }, function(){ reject('tmdb-error'); });
     });
+  }
+
+  /*** Извлечение меты из карточки ***/
+  function extractYear(){
+    var year=''; var det=$(DETAILS);
+    if(det){ var spans=$$('span',det); for(var i=0;i<spans.length;i++){ var s=txt(spans[i]); if(/^\d{4}$/.test(s)){ year=s; break; } } }
+    if(!year && document.title){ var m=document.title.match(/\b(19|20)\d{2}\b/); if(m) year=m[0]; }
+    return year;
+  }
+  function extractTitles(){
+    var list = [];
+
+    // очевидные заголовки
+    var selTitle = '.full-start__title, .full-start-new__title, .full-title, .full-title-name, .full__title, h1, h2';
+    $$(selTitle).forEach(function(n){ var t=txt(n); if(t) list.push(t); });
+
+    // элементы, у кого класс содержит "title"
+    $$('[class*="title"]').forEach(function(n){ var t=txt(n); if(t) list.push(t); });
+
+    // оригинальное название/альт
+    $$('[class*="original"],[class*="orig"],[data-original]').forEach(function(n){ var t=txt(n) || n.getAttribute('data-original'); if(t) list.push(t); });
+
+    // alt/aria-label/title у постера
+    var im = $('img[alt], .full-poster img[alt], .full-start__left img[alt]'); if(im && im.alt) list.push(im.alt);
+    var im2 = $('img[title]'); if(im2 && im2.title) list.push(im2.title);
+    var im3 = $('img[aria-label]'); if(im3 && im3.getAttribute('aria-label')) list.push(im3.getAttribute('aria-label'));
+
+    //  «Русское / Original»
+    var out = [];
+    list.forEach(function(raw){
+      raw = (raw||'').replace(/\s*\(\d{4}\)\s*$/,'').replace(/\s*\[\d{4}\]\s*$/,'').trim();
+      if(!raw) return;
+      var parts = raw.split('/');
+      if(parts.length>1){
+        out.push(parts[0].trim());
+        out.push(parts.slice(1).join('/').trim());
+      } else out.push(raw);
+    });
+
+    // убрать мусор
+    out = out.filter(function(t){
+      t = t.trim();
+      if (!t) return false;
+      var low = t.toLowerCase();
+      if (low.length<2) return false;
+      if (/(подробно|актеры|актёры|комментарии|рекомендации|коллекция)/i.test(low)) return false;
+      return true;
+    });
+
+    // синонимы для частых русских однословников
+    var syn = {
+      'ограбление':['heist','robbery'],
+      'вторжение':['invasion'],
+      'искупление':['redemption'],
+      'побег':['escape','breakout']
+    };
+    var more=[];
+    out.forEach(function(t){ var k=norm(t); if(syn[k]) Array.prototype.push.apply(more, syn[k]); });
+
+    var titles = uniq(out.concat(more)).slice(0,8);
+    if (DEBUG && titles.length) noty('TMDB search titles → '+titles.join(' | '));
+    return titles;
   }
 
   function getCardFromActivity(){
@@ -116,11 +152,10 @@
           var p = act.activity.params || {};
           var id = p.id || (act.activity.card && act.activity.card.id) || null;
           var method = p.method || p.content_type || (act.activity.card && act.activity.card.type) || null;
-          return { id: id, method: method };
+          if (id && method) return { id:id, method:method };
         }
       }
     }catch(e){}
-    // URL-хэш запасной
     var h = String(location.hash||'');
     var id  = (h.match(/[?&]id=(\d+)/)||[])[1] || null;
     var mth = (h.match(/[?&](?:method|content_type)=(movie|tv)/)||[])[1] || null;
@@ -133,40 +168,43 @@
       if (DEBUG) noty('TMDB from Activity: ' + card.method + ' #' + card.id);
       return Promise.resolve(card);
     }
-    // fallback: TMDB search
+
     var titles = extractTitles();
-    var year   = extractYear();
+    var year   = parseInt(extractYear()||'0',10) || 0;
+    if (!titles.length) return Promise.reject('tmdb-not-found(no-titles)');
 
-    function tryMovie(q){
-      return tmdbApi('search/movie', { query:q, include_adult:false, year:year||undefined, language:'ru-RU' })
-        .then(function(res){ var r=(res&&res.results)||[]; return r.length ? {method:'movie', id:r[0].id} : null; })
-        .catch(function(){ return null; });
-    }
-    function tryTV(q){
-      return tmdbApi('search/tv', { query:q, include_adult:false, first_air_date_year:year||undefined, language:'ru-RU' })
-        .then(function(res){ var r=(res&&res.results)||[]; return r.length ? {method:'tv', id:r[0].id} : null; })
-        .catch(function(){ return null; });
-    }
-    function tryMulti(q){
-      return tmdbApi('search/multi', { query:q, include_adult:false, language:'ru-RU' })
-        .then(function(res){
-          var r=(res&&res.results)||[];
-          for (var i=0;i<r.length;i++){
-            if (r[i].media_type==='movie' || r[i].media_type==='tv') return {method:r[i].media_type, id:r[i].id};
-          }
-          return null;
-        })
-        .catch(function(){ return null; });
+    function chooseBest(results){
+      if (!results || !results.length) return null;
+      if (year){
+        for (var i=0;i<results.length;i++){
+          if (pickYear(results[i])===year) return results[i];
+        }
+      }
+      return results[0];
     }
 
-    // перебираем названия: movie -> tv -> multi
+    function tryOne(q, type, lang, yParam){
+      var path = 'search/'+type;
+      var params = { query:q, include_adult:false, language:lang };
+      if (type==='movie' && year) params.year = year;
+      if (type==='tv'    && year) params.first_air_date_year = year;
+      return tmdbApi(path, params).then(function(res){
+        var arr=(res&&res.results)||[];
+        if (DEBUG) noty('TMDB '+type+' '+lang+' «'+q+'»: '+arr.length);
+        var best = chooseBest(arr);
+        return best ? { method:(type==='multi'? (best.media_type || 'movie') : type), id:best.id } : null;
+      }).catch(function(){ return null; });
+    }
+
+    var types = ['movie','tv','multi'];
+    var langs = ['ru-RU','en-US'];
+
     var chain = Promise.resolve(null);
     titles.forEach(function(q){
-      chain = chain.then(function(found){
-        if (found) return found;
-        if (DEBUG) noty('TMDB search «'+q+'»');
-        return tryMovie(q).then(function(res){ return res || tryTV(q); })
-                          .then(function(res){ return res || tryMulti(q); });
+      types.forEach(function(t){
+        langs.forEach(function(L){
+          chain = chain.then(function(found){ if(found) return found; return tryOne(q,t,L); });
+        });
       });
     });
 
@@ -268,12 +306,10 @@
   }
 
   /*** API ***/
-  // KPU
   function kpu_staff(kpId){
     var url = KPU_BASE + '/api/v1/staff?filmId='+encodeURIComponent(kpId);
     return fetchJSON(url, {'accept':'application/json','X-API-KEY':KPU_API_KEY});
   }
-  // DEV
   function dev_byImdb(imdb){
     var url = DEV_BASE + '/v1.4/movie?externalId.imdb='+encodeURIComponent(imdb)
             + '&limit=1&selectFields=id&selectFields=kpId&selectFields=persons';
@@ -283,22 +319,24 @@
     var url = DEV_BASE + '/v1.4/movie/'+encodeURIComponent(id)+'?selectFields=persons&selectFields=id&selectFields=kpId';
     return fetchJSON(url, {'accept':'application/json','X-API-KEY':DEV_API_KEY});
   }
+  function dev_search(query){
+    var url = DEV_BASE + '/v1.4/movie/search?query='+encodeURIComponent(query)+'&page=1&limit=10&selectFields=id&selectFields=kpId&selectFields=year&selectFields=name&selectFields=enName';
+    return fetchJSON(url, {'accept':'application/json','X-API-KEY':DEV_API_KEY});
+  }
 
-  /*** Главный поток ***/
+  /*** Основной поток ***/
   function runOnce(){
     injectCssOnce();
 
     resolveTmdbId().then(function(found){
-      // 1) берём imdb_id у TMDB
+      // 1) получить imdb_id у TMDB
       return tmdbApi(found.method + '/' + found.id + '/external_ids', {}).then(function(json){
         var imdb = json && (json.imdb_id || json.imdbId);
-        if (!imdb){ noty('TMDB: imdb_id не найден'); return null; }
+        if (!imdb){ noty('TMDB: imdb_id не найден'); throw 'no-imdb'; }
         noty('IMDb: ' + imdb);
         return { imdb: imdb };
       });
     }).then(function(state){
-      if (!state || !state.imdb) return;
-
       // 2) DEV → kpId/persons
       return dev_byImdb(state.imdb).then(function(r){
         if (!r.ok) throw r;
@@ -307,7 +345,6 @@
         var devPersons = mapActorsFromDEV(doc && doc.persons || []);
 
         if (kpId){
-          // 3) staff от KPU предпочтительно
           return kpu_staff(kpId).then(function(rr){
             if (rr.ok){
               var mapped = mapActorsFromKPU(rr.data || []);
@@ -318,7 +355,6 @@
           });
         } else {
           if (devPersons.length){ replaceActorsSection(devPersons, 'Кинопоиск DEV'); return; }
-          // добивка, если списочный метод DEV не вернул persons
           if (doc && (doc.id || doc.kpId)){
             return dev_full(doc.id || doc.kpId).then(function(fr){
               if (!fr.ok) throw fr;
@@ -331,7 +367,52 @@
         }
       });
     }).catch(function(err){
-      if (DEBUG) noty('Ошибка цепочки: '+(err&&err.toString?err.toString():String(err)));
+      // Если TMDB не найден или нет imdb — fallback: прямой DEV поиск по названиям
+      if (String(err).indexOf('tmdb-not-found')!==-1 || String(err)==='no-imdb' || String(err)==='tmdb-error'){
+        var titles = extractTitles();
+        var year   = parseInt(extractYear()||'0',10) || 0;
+        if (!titles.length){ noty('KP: нет названий для DEV-поиска'); return; }
+        if (DEBUG) noty('Fallback DEV-search…');
+
+        // перебор названий в DEV
+        var seq = Promise.resolve(null);
+        titles.forEach(function(q){
+          seq = seq.then(function(done){
+            if (done) return done;
+            return dev_search(q).then(function(r){
+              if (!r.ok) return null;
+              var docs = (r.data && r.data.docs)||[];
+              if (!docs.length) return null;
+              var pick=null;
+              if (year){ for(var i=0;i<docs.length;i++){ if(docs[i].year===year){ pick=docs[i]; break; } } }
+              pick = pick || docs[0];
+              var id = pick.kpId || pick.id;
+              return dev_full(id).then(function(fr){
+                if (!fr.ok) return null;
+                var persons = mapActorsFromDEV(fr.data && fr.data.persons || []);
+                if (persons.length){
+                  // попробуем staff, если есть kpId
+                  return kpu_staff(id).then(function(rr){
+                    if (rr.ok){
+                      var mapped = mapActorsFromKPU(rr.data||[]);
+                      if (mapped.length){ replaceActorsSection(mapped, 'KP Unofficial'); return true; }
+                    }
+                    replaceActorsSection(persons, 'Кинопоиск DEV');
+                    return true;
+                  }).catch(function(){ replaceActorsSection(persons, 'Кинопоиск DEV'); return true; });
+                }
+                return null;
+              });
+            }).catch(function(){ return null; });
+          });
+        });
+
+        seq.then(function(ok){
+          if (!ok) noty('KP: не нашла актёров (DEV) — TMDb остаётся');
+        });
+      } else {
+        if (DEBUG) noty('Ошибка: ' + (err && err.toString ? err.toString() : String(err)));
+      }
     });
   }
 
@@ -349,4 +430,6 @@
   (function wait(i){ i=i||0; if(subscribe()) return; if(i<200) setTimeout(function(){wait(i+1)},200); else setTimeout(runOnce,800); })();
 
 })();
+
+
 
