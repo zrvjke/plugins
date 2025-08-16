@@ -6,7 +6,7 @@
  *  - REMOVE full Seasons block in series (range "Сезон …" → before "Актёры", включая якорные прокладки)
  *  - Hard remove + forced reflow to avoid focus/scroll stops
  *
- * Version: 1.8.4 (ES5, Unicode-safe)
+ * Version: 1.8.5 (ES5, Unicode-safe)
  * Author: Roman + ChatGPT
  */
 
@@ -42,7 +42,9 @@
       void document.body.offsetHeight;
       window.dispatchEvent(new Event('resize'));
       var scrollers = document.querySelectorAll('.scroll, .content, .layout__body, .full, .full-start, .full-start-new');
-      for (var i=0;i<scrollers.length;i++){ scrollers[i].scrollTop = scrollers[i].scrollTop; }
+      for (var i=0;i<scrollers.length;i++){ 
+        if (scrollers[i]) scrollers[i].scrollTop = scrollers[i].scrollTop; 
+      }
     }catch(e){}
   }
 
@@ -212,6 +214,7 @@
     var scope=root||document;
     var hActors=findFirstHeading(RE_ACTORS,scope);
     var hNext = findFirstHeading(RE_RECS,scope) || findFirstHeading(RE_COLL,scope);
+    
     if (!hActors && !hNext){
       var any = scope.querySelectorAll(COMM_CLASS_SELECTOR), i;
       for (i=0;i<any.length;i++) removeSectionNode(any[i]);
@@ -222,28 +225,27 @@
       for (k=0;k<any2.length;k++) removeSectionNode(any2[k]);
       return;
     }
+    
     var secActors = hActors ? climbToSection(hActors,10) : null;
     var secNext   = climbToSection(hNext,10);
-
-    var cur = secNext.previousElementSibling, guard=0;
-    while (cur && guard++<100){
-      if (secActors && cur===secActors) break;
-      var looks=false;
-      if (cur.querySelector) {
-        if (cur.querySelector(COMM_CLASS_SELECTOR)) looks=true;
-        var head = cur.querySelector('h1,h2,h3,h4,h5,h6,div,span,p');
-        if (!looks && head && RE_COMM_HEAD.test(norm(textOf(head)))) looks=true;
-        var plusBtn = cur.querySelector('button,div,span');
-        if (!looks && plusBtn && textOf(plusBtn)==='+') looks=true;
-      }
-      var cls = ((cur.className||'')+'').toLowerCase();
-      if (looks || norm(textOf(cur))==='' || /anchor|line__head|line__title|line-head|split/i.test(cls)){
-        var next = cur.previousElementSibling;
-        removeSectionNode(cur);
+    
+    // Удаляем все элементы между секцией актеров и следующей секцией
+    var start = secActors ? secActors.nextElementSibling : null;
+    var end = secNext;
+    
+    if (start && end) {
+      var cur = start;
+      while (cur && cur !== end) {
+        var next = cur.nextElementSibling;
+        removeNode(cur);
         cur = next;
-        continue;
       }
-      break;
+    }
+    
+    // Дополнительно удаляем все комментарии в оставшейся части документа
+    var allComments = scope.querySelectorAll(COMM_CLASS_SELECTOR);
+    for (var i = 0; i < allComments.length; i++) {
+      removeSectionNode(allComments[i]);
     }
   }
   function nukeByClasses(root){
@@ -367,3 +369,4 @@
   })();
 
 })();
+
