@@ -2,11 +2,11 @@
  * Lampa plugin: Hide Details Noise
  *  - Movies: remove HH:MM from details line
  *  - Series: remove Seasons/Episodes in details line + "Следующая … / Осталось дней: N"
- *  - Remove Comments section (by heading/classes and between Actors → (Recommendations/Collection))
- *  - Remove Seasons block (big section like "Сезон 1")
- *  - Hard remove from DOM + forced reflow to avoid focus/scroll stops
+ *  - REMOVE Comments section (by heading/classes and between Actors → (Recommendations/Collection))
+ *  - REMOVE full Seasons block in series (range "Сезон …" → before "Актёры")
+ *  - Hard remove + forced reflow to avoid focus/scroll stops
  *
- * Version: 1.7.6 (Unicode-safe, ES5)
+ * Version: 1.8.0 (ES5, Unicode-safe)
  * Author: Roman + ChatGPT
  */
 
@@ -36,19 +36,17 @@
       first = container.firstElementChild;
     }
   }
-  // заставляем интерфейс пересчитать размеры/навигацию
+  // лёгкий пересчёт после удаления секций, чтобы лента не "цеплялась"
   function forceReflow(){
     try{
       void document.body.offsetHeight;
       window.dispatchEvent(new Event('resize'));
       var scrollers = document.querySelectorAll('.scroll, .content, .layout__body, .full, .full-start, .full-start-new');
-      for (var i=0;i<scrollers.length;i++){
-        scrollers[i].scrollTop = scrollers[i].scrollTop;
-      }
+      for (var i=0;i<scrollers.length;i++){ scrollers[i].scrollTop = scrollers[i].scrollTop; }
     }catch(e){}
   }
 
-  // ---------- series tokens ----------
+  // ---------- series tokens (инфострока) ----------
   var RU_SEASON  = '(?:сезон(?:а|ы|ов)?)';
   var RU_EPISODE = '(?:серия|серии|серий)';
 
@@ -82,7 +80,7 @@
   function isRemainLabelToken(t){ return !!t && RE_REMAIN_LABEL.test(t); }
   function isRemainInlineToken(t){ return !!t && RE_REMAIN_INLINE.test(t); }
 
-  // ---------- details line cleanup ----------
+  // ---------- очистка инфостроки ----------
   function stripTokensIn(container){
     if (!container) return;
     var spans = container.querySelectorAll('span');
@@ -159,12 +157,12 @@
     for (i=0;i<nodes.length;i++) observeDetails(nodes[i]);
   }
 
-  // ---------- sections to remove (comments & seasons) ----------
-  var RE_ACTORS = /^(?:Актёры|Актеры|В ролях|actors?|cast)$/i;
-  var RE_RECS   = /^(?:Рекомендац[^\n\r]*|recommendations?)$/i;
-  var RE_COLL   = /^(?:Коллекц[^\n\r]*|collections?)$/i;
-  var RE_COMM_HEAD = /^(?:комментарии|comments?|reviews|отзывы)$/i;
-  var RE_SEASONS_HEAD = /^(?:сезон(?:\s*\d+)?|сезоны(?:\s*\d+)?|seasons?(?:\s*\d+)?)$/i;
+  // ---------- секции (комменты/рекомендации/актеры/коллекция/сезоны) ----------
+  var RE_ACTORS      = /^(?:актёры|актеры|в ролях|actors?|cast)$/i;
+  var RE_RECS        = /^(?:рекомендац[^\n\r]*|recommendations?)$/i;
+  var RE_COLL        = /^(?:коллекц[^\n\r]*|collections?)$/i;
+  var RE_COMM_HEAD   = /^(?:комментарии|comments?|reviews|отзывы)$/i;
+  var RE_SEASONS_HEAD= /^(?:сезон(?:\s*\d+)?|сезоны(?:\s*\d+)?|seasons?(?:\s*\d+)?)$/i;
 
   var COMM_CLASS_SELECTOR = '[class*="comment"],[id*="comment"],[class*="review"],[id*="review"]';
 
@@ -174,7 +172,7 @@
     return null;
   }
   function climbToSection(el, maxUp){
-    var up=el, steps=0; maxUp=maxUp||8;
+    var up=el, steps=0; maxUp=maxUp||10;
     while (up && steps++<maxUp){
       if (up.parentElement && (up.previousElementSibling || up.nextElementSibling)) return up;
       up = up.parentElement;
@@ -185,7 +183,7 @@
     if (!node) return;
     var prev = node.previousElementSibling;
     removeNode(node);
-    // зачистим пустые «прокладки» сразу рядом
+    // убрать пустые прокладки рядом
     while (prev && norm(textOf(prev))==='' && (!prev.children || prev.children.length===0)){
       var p = prev.previousElementSibling;
       removeNode(prev);
@@ -193,7 +191,7 @@
     }
   }
 
-  // A) по заголовку — удалить целую секцию комментариев
+  // A) комментарии: удалить по заголовку, между Актёры→(Рекомендации|Коллекция), и по классам
   function nukeCommentsByHeading(root){
     var scope = root || document;
     var heads = scope.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p');
@@ -208,8 +206,6 @@
       }
     }
   }
-
-  // B) удалить всё между «Актёры» ←→ первой из (Рекомендации|Коллекция), если это похоже на комментарии
   function nukeBetweenActorsAndNext(root){
     var scope=root||document;
     var hActors=findFirstHeading(RE_ACTORS,scope);
@@ -247,26 +243,37 @@
       break;
     }
   }
-
-  // C) по классам/ID — добивка
   function nukeByClasses(root){
     var scope=root||document, nodes=scope.querySelectorAll(COMM_CLASS_SELECTOR), i;
     for (i=0;i<nodes.length;i++) removeSectionNode(nodes[i]);
   }
 
-  // D) секции сезонов (большой блок)
-  function nukeSeasonsSections(root){
+  // B) сезоны: удалить ВЕСЬ диапазон "Сезон …" → до секции «Актёры»
+  function nukeSeasonsRange(root){
     var scope = root || document;
-    var nodes = scope.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p');
-    var i, el, t, sec, sib;
-    for (i=0;i<nodes.length;i++){
-      el = nodes[i]; t = norm(textOf(el));
-      if (!t) continue;
-      if (RE_SEASONS_HEAD.test(t)){
-        sec = climbToSection(el,10);
-        removeSectionNode(sec);
-        sib = el.nextElementSibling; if (sib) removeSectionNode(sib);
-      }
+    var hSeas  = findFirstHeading(RE_SEASONS_HEAD, scope);
+    if (!hSeas) return;
+
+    var start = climbToSection(hSeas, 10);
+    // граница: актёры; если нет — останов на первом из (комменты/реком/коллекция)
+    var hActors = findFirstHeading(RE_ACTORS, scope);
+    var hStop   = hActors || findFirstHeading(RE_COMM_HEAD, scope) || findFirstHeading(RE_RECS, scope) || findFirstHeading(RE_COLL, scope);
+    var endSection = hStop ? climbToSection(hStop,10) : null;
+
+    // иногда перед заголовком "Сезон" есть якорь/прокладка — снесём и её
+    var prev = start.previousElementSibling;
+    while (prev && norm(textOf(prev))==='' && (!prev.children || prev.children.length<=1)){
+      var p = prev.previousElementSibling;
+      removeNode(prev);
+      prev = p;
+    }
+
+    var cur = start, guard=0;
+    while (cur && guard++<120){
+      if (endSection && cur === endSection) break;
+      var next = cur.nextElementSibling;
+      removeSectionNode(cur);
+      cur = next;
     }
   }
 
@@ -274,11 +281,11 @@
     nukeCommentsByHeading(root);
     nukeBetweenActorsAndNext(root);
     nukeByClasses(root);
-    nukeSeasonsSections(root);
+    nukeSeasonsRange(root);
     forceReflow();
   }
 
-  // ---------- CSS safety net ----------
+  // ---------- CSS safety net (на случай краткого мигания) ----------
   function injectCssOnce(){
     if (document.getElementById('hds-comments-css')) return;
     var style = document.createElement('style');
@@ -303,7 +310,7 @@
         scanDetails(document);
         nukeAllNoise(document);
         injectCssOnce();
-      },30);
+      },25);
     });
     mo.observe(document.body,{childList:true,subtree:true});
     rootObserved=true;
@@ -319,7 +326,7 @@
         nukeAllNoise(document);
         injectCssOnce();
         ensureRootObserver();
-      },50);
+      },40);
     }
   }
   function subscribeOnce(){
@@ -331,7 +338,7 @@
       nukeAllNoise(document);
       injectCssOnce();
       ensureRootObserver();
-    },200);
+    },150);
     return true;
   }
   (function waitForLampa(tries){
