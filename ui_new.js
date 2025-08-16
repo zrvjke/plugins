@@ -1,224 +1,95 @@
-// Lampa plugin: Hide quality, duration, seasons/episodes information and style genres on detail cards.
-//
-// This plugin removes quality markers (4K, WEBвЂ‘DL, HDRip, etc.), the runtime/duration
-// line, and season/episode counters from the right-hand information panel of
-// movie and series detail pages. It also removes any bullet separators that
-// remain after removing these items, and applies a semiвЂ‘transparent
-// background to genre and tag elements to make them stand out. The plugin
-// does not alter the list view or comments section.
+/**
+ * Lampa plugin: Remove movie duration from the info line
+ *
+ * This plugin strips the runtime (formatted like 02:14) from the
+ * information line that appears above the list of genres on a movie's
+ * detail page.  In the stock interface the runtime is shown on the
+ * left of the genre list and separated from the following values by a
+ * dot or bullet.  The modified version of the вЂњInterface MODвЂќ plugin
+ * by bywolf88 moves the runtime to the end of the line and reвЂ‘formats
+ * it.  Our goal is different: we do not reposition or reformat the
+ * runtime at allвЂ”we simply remove the runtime element entirely,
+ * along with its adjacent separator.  This keeps the rest of the
+ * details intact while omitting the length of the film.
+ *
+ * The implementation relies on Lampa's event system.  When the
+ * 'full' view finishes loading (the `complite` event) we scan the
+ * details container for spans whose text matches a time in HH:MM
+ * format and remove them.  We also remove the preceding or following
+ * separator element (`full-start__split`/`full-start-new__split` or a
+ * span containing a dot/bullet) to avoid leaving a stray dot at the
+ * beginning of the genre list.  The plugin is selfвЂ‘contained and
+ * activates itself automatically once Lampa has loaded.
+ */
 
 (function () {
     'use strict';
-    // Prevent duplicate injection
-    if (!window.Lampa || window.hideQualityGenrePluginInjected) return;
-    window.hideQualityGenrePluginInjected = true;
 
     /**
-     * Detect if a string looks like a quality indicator.
-     * @param {string} text
-     * @returns {boolean}
+     * Remove runtime spans and their adjacent separators from the
+     * details section.  This function will search both the legacy
+     * (fullвЂ‘start__details) and the new (fullвЂ‘startвЂ‘new__details)
+     * containers and perform the removal.
      */
-    function isQualityText(text) {
-        if (!text) return false;
-        var t = text.trim().toUpperCase();
-        if (!t) return false;
-        // Pure numeric strings and TV badge are not quality
-        if (/^\d+(\.\d+)?$/.test(t) || t === 'TV') return false;
-        var tokens = [
-            '4K','8K','HD','FHD','FULLHD','UHD','BD','BDRIP','HDRIP','HDR',
-            'WEBDL','WEB-DL','WEB','WEBRIP','HDTV','TS','CAM','CAMRIP','DVDRIP',
-            'DVDSCR','DVD','360P','480P','720P','1080P','1440P','2160P','HDR10'
-        ];
-        if (tokens.indexOf(t) !== -1) return true;
-        return /(BLURAY|HDRIP|WEB\s?DL|WEBRIP|HDTV|DVDRIP|TS|CAM|4K|8K|2160P|1080P|720P|360P|480P)/i.test(t);
-    }
-
-    /**
-     * Determine whether a string is the duration line. It checks for known
-     * prefixes like "РІСЂРµРјСЏ", "РґР»РёС‚РµР»СЊРЅРѕСЃС‚СЊ", etc., or for patterns that
-     * resemble durations (e.g. contains "РјРёРЅ" with digits).
-     * @param {string} text
-     * @returns {boolean}
-     */
-    function isDurationText(text) {
-        if (!text) return false;
-        var trimmed = text.trim();
-        var lower = trimmed.toLowerCase();
-        // Direct HH:MM or H:MM format (e.g. 02:14, 1:05) or HH:MM:SS format indicates a duration
-        if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(trimmed)) return true;
-        var prefixes = ['РІСЂРµРјСЏ', 'РґР»РёС‚РµР»СЊРЅРѕСЃС‚СЊ', 'РїСЂРѕРґРѕР»Р¶РёС‚РµР»СЊРЅРѕСЃС‚СЊ', 'runtime', 'duration'];
-        for (var i = 0; i < prefixes.length; i++) {
-            if (lower.startsWith(prefixes[i])) return true;
-        }
-        // Contains digits and Russian/English minute/hour abbreviations
-        if (/\d/.test(lower) && /(РјРёРЅ|РјРёРЅ\.|min|m|С‡|h)/.test(lower)) {
-            return true;
-        }
-        return false;
-    }
-
-    /**
-     * Remove quality, duration, season and episode lines from info sections and
-     * clean up bullet separators.
-     */
-    function removeInfoLines() {
-        try {
-            // Remove quality tag near poster
-            document.querySelectorAll('.tag--quality').forEach(function (el) { el.remove(); });
-            // Localized translation for "player_quality"
-            var qKey = '';
-            try {
-                qKey = (Lampa.Lang.translate('player_quality') || '').toLowerCase();
-            } catch (e) { qKey = ''; }
-            var seasonPrefixes = ['СЃРµР·РѕРЅ', 'СЃРµР·РѕРЅС‹', 'СЃРµР·РѕРЅРѕРІ', 'СЃРµР·.', 'seasons', 'season'];
-            var episodePrefixes = ['СЃРµСЂРёРё', 'СЃРµСЂРёР№', 'СЃРµСЂРёСЏ', 'СЃРµСЂ.', 'episodes', 'episode'];
-            var selectors = [
-                '.full-start__info span',
-                '.full-start-new__info span',
-                '.full-descr__info span'
-            ].join(',');
-            document.querySelectorAll(selectors).forEach(function (span) {
-                var text = (span.textContent || '').trim();
-                if (!text) return;
-                var lower = text.toLowerCase();
-                var remove = false;
-                // Quality line detection
-                if ((qKey && lower.startsWith(qKey)) || lower.startsWith('quality') || lower.startsWith('РєР°С‡РµСЃС‚РІРѕ')) {
-                    remove = true;
-                }
-                // Duration detection
-                if (isDurationText(text)) remove = true;
-                // Season/Episode detection
-                seasonPrefixes.forEach(function (p) { if (lower.startsWith(p)) remove = true; });
-                episodePrefixes.forEach(function (p) { if (lower.startsWith(p)) remove = true; });
-                // Quality token detection
-                if (isQualityText(text)) remove = true;
-                if (remove) {
-                    // Remove preceding bullet separators (вЂў, В·, .)
-                    var prev = span.previousSibling;
-                    while (prev && prev.nodeType === Node.TEXT_NODE && prev.textContent.trim() === '') {
-                        prev = prev.previousSibling;
+    function removeDurationFromDetails() {
+        // Collect all potential detail containers
+        var $containers = $('.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info');
+        $containers.each(function () {
+            var $container = $(this);
+            // Iterate over all span elements within the container
+            $container.find('span').each(function () {
+                var $span = $(this);
+                var text = $span.text().trim();
+                // Match times of the form "02:14" or "2:05"
+                if (/^\d{1,2}:\d{2}$/.test(text)) {
+                    // Attempt to remove a separator before or after the time
+                    var $prev = $span.prev();
+                    var $next = $span.next();
+                    // Separator spans often have class full-start__split or
+                    // full-start-new__split.  Sometimes the separator is
+                    // simply a dot (".") or bullet ("вЂў") in its own span.
+                    var isSeparator = function ($el) {
+                        if (!$el || !$el.length) return false;
+                        var cls = $el.attr('class') || '';
+                        var txt = ($el.text() || '').trim();
+                        return /full-start.*__split/.test(cls) || /^[\.В·вЂў|]$/.test(txt);
+                    };
+                    // Remove the separator either before or after the time
+                    if (isSeparator($prev)) {
+                        $prev.remove();
+                    } else if (isSeparator($next)) {
+                        $next.remove();
                     }
-                    if (prev) {
-                        var ptxt = '';
-                        if (prev.nodeType === Node.TEXT_NODE) {
-                            ptxt = prev.textContent.trim();
-                        } else if (prev.nodeType === Node.ELEMENT_NODE) {
-                            ptxt = (prev.textContent || '').trim();
-                        }
-                        if (ptxt === 'вЂў' || ptxt === 'В·' || ptxt === '.') {
-                            prev.remove();
-                        }
-                    }
-                    span.remove();
+                    // Remove the time span itself
+                    $span.remove();
                 }
             });
-        } catch (err) {
-            // Ignore errors during removal
-        }
+        });
     }
 
     /**
-     * After removing info lines, this function cleans up any leading bullet
-     * separators that might remain as the first visible node in the info
-     * container. Without this, a stray bullet could appear at the beginning
-     * of the info row when all preceding fields have been removed.
+     * Initialize the plugin by hooking into Lampa's event system.  We
+     * listen for the 'full' view to complete loading.  When that
+     * happens we schedule a short timeout to give the DOM time to
+     * render and then perform the removal.
      */
-    function cleanLeadingBullets() {
-        var containers = document.querySelectorAll('.full-start__info, .full-start-new__info, .full-descr__info');
-        containers.forEach(function (container) {
-            var nodes = Array.from(container.childNodes);
-            for (var i = 0; i < nodes.length; i++) {
-                var node = nodes[i];
-                if (node.nodeType === Node.TEXT_NODE && node.textContent.trim() === '') continue;
-                var text = '';
-                if (node.nodeType === Node.TEXT_NODE) {
-                    text = node.textContent.trim();
-                } else if (node.nodeType === Node.ELEMENT_NODE) {
-                    text = (node.textContent || '').trim();
-                }
-                if (text === 'вЂў' || text === 'В·' || text === '.') {
-                    node.remove();
-                }
-                // Stop after first non-empty node regardless of removal or not
-                break;
+    function initPlugin() {
+        // Guard against missing globals
+        if (typeof Lampa === 'undefined' || !Lampa.Listener) return;
+        Lampa.Listener.follow('full', function (data) {
+            if (data && data.type === 'complite') {
+                // Use a slight delay to ensure the DOM is ready
+                setTimeout(removeDurationFromDetails, 50);
             }
         });
     }
 
-    /**
-     * Apply semiвЂ‘transparent backgrounds to genre and tag elements.
-     */
-    function styleGenres() {
-        if (!document.getElementById('hide-quality-genre-style')) {
-            var styleEl = document.createElement('style');
-            styleEl.id = 'hide-quality-genre-style';
-            styleEl.textContent = [
-                '.genre-badge {',
-                '  background: rgba(0, 0, 0, 0.4);',
-                '  padding: 0.2em 0.5em;',
-                '  border-radius: 0.3em;',
-                '  color: #fff;',
-                '  margin-right: 0.3em;',
-                '  display: inline-block;',
-                '  font-size: 0.95em;',
-                '}',
-                '.full-descr__tags .tag-count {',
-                '  background: rgba(0, 0, 0, 0.4);',
-                '  border-radius: 0.3em;',
-                '  padding: 0.2em 0.5em;',
-                '  color: #fff;',
-                '}',
-            ].join('\n');
-            document.head.appendChild(styleEl);
-        }
-        var infoSpans = document.querySelectorAll(
-            '.full-start__info span, .full-start-new__info span, .full-descr__info span'
-        );
-        infoSpans.forEach(function (span) {
-            var text = (span.textContent || '').trim();
-            if (!text) return;
-            if (text.indexOf(':') !== -1) return;
-            if (/\d/.test(text)) return;
-            if (text.indexOf(',') !== -1 || text.indexOf('|') !== -1) {
-                span.classList.add('genre-badge');
-            }
-        });
-        document.querySelectorAll('.full-descr__tags .tag-count').forEach(function (el) {
-            el.classList.add('genre-badge');
-        });
-    }
-
-    /**
-     * Event handler for detail page completion.
-     */
-    function onFull(event) {
-        if (event && event.type === 'complite') {
-            setTimeout(function () {
-                removeInfoLines();
-                // Clean any leading bullets after line removal
-                cleanLeadingBullets();
-                styleGenres();
-            }, 200);
-        }
-    }
-
-    if (Lampa.Listener && typeof Lampa.Listener.follow === 'function') {
-        Lampa.Listener.follow('full', onFull);
-    }
-
-    try {
-        if (Lampa.Plugin && typeof Lampa.Plugin.create === 'function') {
-            Lampa.Plugin.create({
-                name: 'Hide Quality/Duration & Style Genres',
-                version: '1.2.0',
-                description: 'Hides quality, runtime, seasons and episodes from detail cards and applies a semiвЂ‘transparent background to genres.',
-                type: 'card',
-                icon: '\uD83D\uDD2D'
-            });
-        }
-    } catch (e) {
-        // Ignore registration errors
+    // Some builds of Lampa expose an `appready` flag once initial
+    // startup completes.  If it's already ready we initialise
+    // immediately; otherwise we wait until the DOMContentLoaded event.
+    if (window.appready) {
+        initPlugin();
+    } else {
+        document.addEventListener('DOMContentLoaded', initPlugin);
     }
 })();
-
