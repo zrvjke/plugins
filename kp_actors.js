@@ -1,8 +1,9 @@
 /**
- * Lampa plugin: Watched Flag from Kinopoisk export (v2.2)
+ * Lampa plugin: Watched Flag from Kinopoisk export (v2.3)
  * — Перед жанрами показывает [+ Просмотрено] / [– Не просмотрено]
  * — Источник: твой список kpIds из КП (через URL ИЛИ inline ниже)
  * — Клик по флажку — локальный оверрайд (localStorage)
+ * — Устойчив к перерисовкам и разным темам Лампы
  */
 
 (function(){
@@ -16,11 +17,12 @@
   var KP_IDS_INLINE = []; // пример: [301, 535341, 123456]
 
   var REMOTE_TTL_MS = 12 * 60 * 60 * 1000; // 12 ч
-  var DEBUG = false;
+  var DEBUG = true; // включи для подсказок (Noty)
 
   /* ====== ВСПОМОГАТЕЛЬНОЕ ====== */
   function noty(s){ try{ if(DEBUG && window.Lampa && Lampa.Noty) Lampa.Noty.show(String(s)); }catch(e){} }
   function $(sel,root){ return (root||document).querySelector(sel); }
+  function $all(sel,root){ return Array.prototype.slice.call((root||document).querySelectorAll(sel)); }
   function textOf(n){ return (n && (n.textContent||n.innerText)||'').replace(/\u00A0/g,' ').trim(); }
   function readLS(k,d){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch(e){ return d; } }
   function writeLS(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
@@ -33,16 +35,31 @@
     var st = document.createElement('style');
     st.id = 'hds-watch-css';
     st.textContent =
-      '.hds-watch-flag{display:inline-flex;align-items:center;gap:6px;padding:2px 6px;border-radius:8px;background:rgba(255,255,255,.08);font-weight:600;font-size:12px;user-select:none;cursor:pointer;margin-right:6px}' +
+      '.hds-watch-flag{display:inline-flex;align-items:center;gap:6px;padding:2px 6px;border-radius:8px;background:rgba(255,255,255,.08);font-weight:600;font-size:12px;user-select:none;cursor:pointer;margin-right:6px;white-space:nowrap}' +
       '.hds-watch-flag[data-state="watched"]{color:#4ee38a}' +
       '.hds-watch-flag[data-state="unwatched"]{color:#ff7a7a}' +
-      '.hds-watch-split{display:inline-block;margin:0 6px;opacity:.6}';
+      '.hds-watch-split{display:inline-block;margin:0 6px;opacity:.6}' +
+      /* чтобы наш флажок точно был виден */
+      '.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info{display:flex;flex-wrap:wrap;align-items:center;gap:6px}';
     document.head.appendChild(st);
   }
 
   /* ====== МЕТА КАРТОЧКИ ====== */
-  var DETAILS_SEL = '.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info';
-  function details(){ return $(DETAILS_SEL); }
+  var DETAILS_SEL = [
+    '.full-start__details',
+    '.full-start__info',
+    '.full-start-new__details',
+    '.full-start-new__info',
+    // запасной вариант: иногда жанры лежат в тегах
+    '.full-start__tags',
+    '.full-start-new__tags'
+  ].join(', ');
+
+  function findDetailsContainers(){
+    // берём все подходящие контейнеры и фильтруем «пустые»
+    var nodes = $all(DETAILS_SEL);
+    return nodes.filter(function(n){ return n && (n.children && n.children.length > 0); });
+  }
 
   function activeMeta(){
     var o={ type:'movie', tmdb_id:null, kp_id:null, imdb_id:null, title:'', original:'', year:0 };
@@ -85,7 +102,7 @@
 
   function withRemote(cb){
     var s = inlineSet();
-    if (s){ cb(s); return; }
+    if (s){ noty('INLINE ids: '+s.size); cb(s); return; }
 
     if (!REMOTE_JSON_URL){ cb(null); return; }
 
@@ -95,6 +112,7 @@
     if (cached && Date.now()-cached.ts < REMOTE_TTL_MS){
       remoteSet = new Set(cached.kpIds||[]);
       remoteTS  = cached.ts;
+      noty('REMOTE cache: '+remoteSet.size);
       cb(remoteSet); return;
     }
 
@@ -113,10 +131,11 @@
         remoteSet = new Set(ids);
         remoteTS  = Date.now();
         writeLS(LS_REMOTE, {ts:remoteTS, kpIds:ids});
+        noty('REMOTE loaded: '+ids.length);
         cb(remoteSet); while(waiters.length) waiters.shift()(remoteSet);
-      }catch(e){ cb(null); while(waiters.length) waiters.shift()(null); }
+      }catch(e){ noty('REMOTE parse error'); cb(null); while(waiters.length) waiters.shift()(null); }
     };
-    x.onerror=function(){ fetching=false; cb(null); while(waiters.length) waiters.shift()(null); };
+    x.onerror=function(){ fetching=false; noty('REMOTE fetch error'); cb(null); while(waiters.length) waiters.shift()(null); };
     x.send();
   }
 
@@ -131,19 +150,21 @@
       var t=textOf(next), cls=(next.className||'')+'';
       if (/full-start.*__split/.test(cls) || /^[.\u2022\u00B7|\/]$/.test(t)) need=false;
     }
-    if(need){
+    if(need && node && node.parentNode){
       var s=document.createElement('span'); s.className='hds-watch-split'; s.textContent='·';
-      node.parentNode && node.parentNode.insertBefore(s, node.nextSibling);
+      node.parentNode.insertBefore(s, node.nextSibling);
     }
   }
 
-  function render(state){
-    ensureCss();
-    var cont=details(); if(!cont) return;
+  function renderInto(cont, state){
+    if(!cont) return;
     var flag=cont.querySelector('.hds-watch-flag');
     if(!flag){
       flag=document.createElement('span');
       flag.className='hds-watch-flag';
+      // чтобы не было «якорных» фокусов
+      flag.setAttribute('tabindex','-1');
+      flag.setAttribute('aria-hidden','false');
       cont.insertBefore(flag, cont.firstChild);
     }
     flag.setAttribute('data-state', state?'watched':'unwatched');
@@ -151,18 +172,32 @@
     ensureSplitAfter(flag);
   }
 
+  function render(state){
+    ensureCss();
+    var containers = findDetailsContainers();
+    if (!containers.length){
+      noty('details not found, retry…');
+      return false;
+    }
+    containers.forEach(function(cont){ renderInto(cont, state); });
+    return true;
+  }
+
   function enableToggle(meta, resolvedKey){
-    var cont=details(); if(!cont) return;
-    var flag=cont.querySelector('.hds-watch-flag'); if(!flag) return;
-    flag.onclick=function(e){
-      e.preventDefault(); e.stopPropagation();
-      var local=readLocal(), k=(resolvedKey||keys(meta)[0]); if(!k) return;
-      var next = !(local[k]===1);
-      local[k]= next ? 1 : 0;
-      writeLocal(local);
-      render(next);
-      noty(next?'Пометила как просмотрено':'Сняла отметку «просмотрено»');
-    };
+    var containers = findDetailsContainers();
+    if (!containers.length) return;
+    containers.forEach(function(cont){
+      var flag=cont.querySelector('.hds-watch-flag'); if(!flag) return;
+      flag.onclick=function(e){
+        e.preventDefault(); e.stopPropagation();
+        var local=readLocal(), k=(resolvedKey||keys(meta)[0]); if(!k) return;
+        var next = !(local[k]===1);
+        local[k]= next ? 1 : 0;
+        writeLocal(local);
+        render(next);
+        noty(next?'Пометила как просмотрено':'Сняла отметку «просмотрено»');
+      };
+    });
   }
 
   /* ====== ЛОГИКА ====== */
@@ -177,27 +212,52 @@
     });
   }
 
-  function kickoff(){
+  // Повторные попытки, пока дом дорисовывается
+  function kickoffWithRetries(attempts){
+    attempts = attempts||0;
     var meta=activeMeta();
     if(!meta || (!meta.kp_id && !meta.tmdb_id && !meta.title)) return;
+
     decide(meta, function(isWatched, keyUsed){
-      render(isWatched);
-      enableToggle(meta, keyUsed);
-      observeDetails();
+      var ok = render(isWatched);
+      if(!ok && attempts<20){ // до ~2 секунд суммарно
+        setTimeout(function(){ kickoffWithRetries(attempts+1); }, 100);
+      } else {
+        enableToggle(meta, keyUsed);
+      }
     });
   }
 
-  function observeDetails(){
-    var cont=details(); if(!cont || cont.getAttribute('data-hds-watch-observed')==='1') return;
-    var pend=false, mo=new MutationObserver(function(){ if(pend) return; pend=true; setTimeout(function(){ pend=false; kickoff(); },0); });
-    mo.observe(cont,{childList:true,subtree:true});
-    cont.setAttribute('data-hds-watch-observed','1');
+  function observeBodyOnce(){
+    if (document.body && !document.body.__hds_watch_observed){
+      var pend=false, mo=new MutationObserver(function(muts){
+        if (pend) return; pend=true;
+        setTimeout(function(){ pend=false; kickoffWithRetries(0); }, 50);
+      });
+      mo.observe(document.body, {childList:true, subtree:true});
+      document.body.__hds_watch_observed = true;
+    }
   }
 
-  function onFull(e){ if(e && e.type==='complite') setTimeout(kickoff,180); }
-  function boot(){ if(!window.Lampa||!Lampa.Listener) return false; Lampa.Listener.follow('full', onFull); return true; }
+  function onFull(e){
+    if(!e) return;
+    if(e.type==='build' || e.type==='open' || e.type==='complite'){
+      noty('full:'+e.type);
+      setTimeout(function(){
+        kickoffWithRetries(0);
+        observeBodyOnce();
+      }, 120);
+    }
+  }
+
+  function boot(){
+    if(!window.Lampa || !Lampa.Listener) return false;
+    Lampa.Listener.follow('full', onFull);
+    return true;
+  }
   (function wait(i){ i=i||0; if(boot()) return; if(i<200) setTimeout(function(){wait(i+1);},200); })();
 
 })();
+
 
 
