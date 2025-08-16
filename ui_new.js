@@ -2,11 +2,12 @@
  * Lampa plugin: Hide Details Noise
  *  - Movies: remove HH:MM from details line
  *  - Series: remove Seasons/Episodes in details line + "Следующая … / Осталось дней: N"
- *  - REMOVE Comments section (по заголовкам/классам, между Актёры → (Рекомендации|Коллекция))
- *  - REMOVE full Seasons block in series (диапазон "Сезон …" → перед "Актёры", включая якорные прокладки)
+ *  - REMOVE Comments section (by heading/classes and between Actors → (Recommendations/Collection))
+ *  - REMOVE full Seasons block in series (range "Сезон …" → before "Актёры", включая якорные прокладки)
  *  - Hard remove + forced reflow to avoid focus/scroll stops
  *
- * Version: 1.8.9 (ES5, Unicode-safe)
+ * Version: 1.8.4 (ES5, Unicode-safe)
+ * Author: Roman + ChatGPT
  */
 
 (function () {
@@ -35,6 +36,7 @@
       first = container.firstElementChild;
     }
   }
+  // лёгкий пересчёт после удаления секций, чтобы лента не "цеплялась"
   function forceReflow(){
     try{
       void document.body.offsetHeight;
@@ -70,6 +72,7 @@
     return /^\d{1,2}$/.test(s) || new RegExp('^'+RU_MONTH+'$','i').test(s) ||
            new RegExp('^'+EN_MONTH+'$','i').test(s) || /^\d{4}$/.test(s);
   }
+  // мягкие проверки: слово встречается где угодно в span (важно для "Следующая 19 августа" в одном span)
   function containsNextLabel(t){ return /следующ|next\b/i.test(t||''); }
   function containsRemainLabel(t){ return /осталось\s*дней|days\s*left/i.test(t||''); }
   function isSlashDivider(t){ return /^[/|\\-]$/.test((t||'').trim()); }
@@ -108,7 +111,7 @@
         rm.push(s); continue;
       }
 
-      // Series: "Следующая … / Осталось дней: N" — ловлю и внутри одного span
+      // Series: "Следующая … / Осталось дней: N" — теперь ловим и «внутри» span
       if (containsNextLabel(txt) || containsRemainLabel(txt)){
         var p3=s.previousElementSibling, n3=s.nextElementSibling;
         if (isSeparatorNode(p3)) rm.push(p3);
@@ -123,7 +126,7 @@
         continue;
       }
 
-      // строгий "Осталось дней: N"
+      // строгий «Осталось дней: N» отдельным блоком
       if (/^(?:осталось\s+дней|days\s+left)\s*:?\s*\d*\s*$/i.test(txt)){
         var pr=s.previousElementSibling; if (isSeparatorNode(pr)) rm.push(pr);
         var nr=s.nextElementSibling; if (isSeparatorNode(nr)) { rm.push(nr); nr=nr.nextElementSibling; }
@@ -158,7 +161,6 @@
   var RE_SEASONS_HEAD = /^(?:сезон(?:\s*\d+)?|сезоны(?:\s*\d+)?|seasons?(?:\s*\d+)?)$/i;
 
   var COMM_CLASS_SELECTOR = '[class*="comment"],[id*="comment"],[class*="review"],[id*="review"]';
-  var ANCHOR_CLASS_RE = /(anchor|line__head|line__title|line-head)/i;
 
   function findFirstHeading(re, root){
     var scope=root||document, nodes=scope.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p'), i,n,t;
@@ -180,8 +182,8 @@
     // убрать пустые/якорные прокладки рядом
     while (prev){
       var txt = norm(textOf(prev));
-      var cls = ((prev.className||'')+'');
-      if (txt==='' || ANCHOR_CLASS_RE.test(cls) || RE_SEASONS_HEAD.test(txt)){
+      var cls = ((prev.className||'')+'').toLowerCase();
+      if (txt==='' || /anchor|line__head|line__title|line-head/.test(cls) || RE_SEASONS_HEAD.test(txt)){
         var p = prev.previousElementSibling;
         removeNode(prev);
         prev = p;
@@ -191,7 +193,7 @@
     }
   }
 
-  // A) комментарии по заголовку
+  // A) комментарии
   function nukeCommentsByHeading(root){
     var scope = root || document;
     var heads = scope.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p');
@@ -206,8 +208,6 @@
       }
     }
   }
-
-  // B) назад от Рекомендаций/Коллекции (зачистка комментариев/якорей/пустых блоков)
   function nukeBetweenActorsAndNext(root){
     var scope=root||document;
     var hActors=findFirstHeading(RE_ACTORS,scope);
@@ -226,18 +226,18 @@
     var secNext   = climbToSection(hNext,10);
 
     var cur = secNext.previousElementSibling, guard=0;
-    while (cur && guard++<80){
+    while (cur && guard++<100){
       if (secActors && cur===secActors) break;
       var looks=false;
       if (cur.querySelector) {
         if (cur.querySelector(COMM_CLASS_SELECTOR)) looks=true;
         var head = cur.querySelector('h1,h2,h3,h4,h5,h6,div,span,p');
         if (!looks && head && RE_COMM_HEAD.test(norm(textOf(head)))) looks=true;
+        var plusBtn = cur.querySelector('button,div,span');
+        if (!looks && plusBtn && textOf(plusBtn)==='+') looks=true;
       }
-      var cls = ((cur.className||'')+'');
-      if (!looks && (ANCHOR_CLASS_RE.test(cls) || norm(textOf(cur))==='')) looks = true;
-
-      if (looks){
+      var cls = ((cur.className||'')+'').toLowerCase();
+      if (looks || norm(textOf(cur))==='' || /anchor|line__head|line__title|line-head|split/i.test(cls)){
         var next = cur.previousElementSibling;
         removeSectionNode(cur);
         cur = next;
@@ -246,50 +246,12 @@
       break;
     }
   }
-
-  // C) ВПЕРЁД от Актёров: удалить вообще всё до первой «живой» секции (Рекомендации|Коллекция)
-  function nukeForwardFromActors(root){
-    var scope=root||document;
-    var hActors=findFirstHeading(RE_ACTORS,scope);
-    if (!hActors) return;
-
-    var start = climbToSection(hActors,10);
-    var hNext = findFirstHeading(RE_RECS,scope) || findFirstHeading(RE_COLL,scope);
-    if (!hNext){
-      // если конца ещё нет — ничего радикально не трогаю (подгрузится → добъёт observer),
-      // но аккуратно снимаю якорные/пустые прокладки сразу после актёров:
-      var curA = start.nextElementSibling, guardA=0;
-      while (curA && guardA++<40){
-        var clsA = ((curA.className||'')+'');
-        var txtA = norm(textOf(curA));
-        if (ANCHOR_CLASS_RE.test(clsA) || txtA===''){
-          var nxA = curA.nextElementSibling;
-          removeSectionNode(curA);
-          curA = nxA;
-          continue;
-        }
-        break;
-      }
-      return;
-    }
-    // конец найден — удаляю всё между ними ПОЛНОСТЬЮ
-    var end = climbToSection(hNext,10);
-    var cur = start.nextElementSibling, guard=0;
-    while (cur && guard++<200){
-      if (cur===end) break;
-      var next = cur.nextElementSibling;
-      removeSectionNode(cur);
-      cur = next;
-    }
-  }
-
-  // D) добивка по классам/ID
   function nukeByClasses(root){
-    var scope=root||document, nodes=scope.querySelectorAll(COMM_CLASS_SELECTOR+', [class*="anchor"], [id*="anchor"]'), i;
+    var scope=root||document, nodes=scope.querySelectorAll(COMM_CLASS_SELECTOR), i;
     for (i=0;i<nodes.length;i++) removeSectionNode(nodes[i]);
   }
 
-  // E) сезоны: диапазон "Сезон …" → до «Актёры»
+  // B) сезоны: удалить ВЕСЬ диапазон "Сезон …" → до секции «Актёры»
   function nukeSeasonsRange(root){
     var scope = root || document;
     var hSeas  = findFirstHeading(RE_SEASONS_HEAD, scope);
@@ -297,11 +259,12 @@
 
     var start = climbToSection(hSeas, 10);
 
+    // снесём всё, что перед заголовком похоже на якорь/шапку/пустую прокладку
     var prev = start.previousElementSibling;
     while (prev){
       var ptxt = norm(textOf(prev));
-      var pcl  = ((prev.className||'')+'');
-      if (ptxt==='' || ANCHOR_CLASS_RE.test(pcl) || RE_SEASONS_HEAD.test(ptxt)){
+      var pcl  = ((prev.className||'')+'').toLowerCase();
+      if (ptxt==='' || /anchor|line__head|line__title|line-head/.test(pcl) || RE_SEASONS_HEAD.test(ptxt)){
         var pp = prev.previousElementSibling;
         removeNode(prev);
         prev = pp;
@@ -326,13 +289,12 @@
   function nukeAllNoise(root){
     nukeCommentsByHeading(root);
     nukeBetweenActorsAndNext(root);
-    nukeForwardFromActors(root);  // ключевой фикс: убираю всё между Актёры → (Рекомендации|Коллекция)
     nukeByClasses(root);
     nukeSeasonsRange(root);
     forceReflow();
   }
 
-  // ---------- CSS страхующий ----------
+  // ---------- CSS safety net (на случай краткого мигания) ----------
   function injectCssOnce(){
     if (document.getElementById('hds-comments-css')) return;
     var style = document.createElement('style');
@@ -354,6 +316,7 @@
       if (pend) return; pend=true;
       setTimeout(function(){
         pend=false;
+        // инфострока + секции
         var nodes=document.querySelectorAll(SELECTORS_DETAILS), i;
         for (i=0;i<nodes.length;i++) stripTokensIn(nodes[i]);
         nukeAllNoise(document);
@@ -368,6 +331,7 @@
   function handleFullEvent(e){
     if (!e || !e.type) return;
     if (e.type==='build' || e.type==='open' || e.type==='complite'){
+      // максимально рано — без задержки, чтобы не попали в реестр якорей
       (function(){
         var nodes=document.querySelectorAll(SELECTORS_DETAILS), i;
         for (i=0;i<nodes.length;i++) stripTokensIn(nodes[i]);
