@@ -1,18 +1,28 @@
 /**
- * Lampa plugin: Watched Flag from Kinopoisk export (v2.5)
- * — Пишу перед жанрами [+ Просмотрено] / [– Не просмотрено]
- * — Беру твой список kpIds из JSON (GitHub Raw) ИЛИ из inline-массива ниже
- * — Умею маппить TMDB → IMDb → KP (и резерв: TMDB → KP, Title+Year → KP)
- * — «–» рисую сразу; когда найду kpId и он есть в списке — меняю на «+»
+ * Lampa plugin: Watched Flag from Kinopoisk export (v2.6)
+ * — Перед жанрами: [+ Просмотрено] / [– Не просмотрено]
+ * — Беру kpIds из твоего JSON (URL ИЛИ inline)
+ * — Рисую "–" сразу; после загрузки списка/маппинга переключаю на "+"
+ * — Починила кэш/доступ: canonical RAW URL, cache-busting, fallback URL
  */
 
 (function(){
   'use strict';
 
   /* ====== НАСТРОЙКА ====== */
-  var REMOTE_JSON_URL = 'https://raw.githubusercontent.com/zrvjke/plugins/refs/heads/main/kp-watched.json';
-  var KP_IDS_INLINE = [];            // если не хочешь URL — вставь массив сюда и оставь REMOTE_JSON_URL пустым
-  var DEV_API_KEY   = 'KS9Z0SJ-5WCMSN8-MA3VHZK-V1ZFH4G'; // api.kinopoisk.dev (для маппинга)
+  // 1) ОСНОВНОЙ URL (канонический RAW GitHub):
+  var REMOTE_JSON_URL = 'https://raw.githubusercontent.com/zrvjke/plugins/main/kp-watched.json';
+
+  // 2) ЗАПАСНОЙ URL (например, Gist Raw). Если основной не загрузится — попробую этот.
+  //   Пример: 'https://gist.githubusercontent.com/<you>/<hash>/raw/kp-watched.json'
+  var REMOTE_ALT_URL = '';
+
+  // 3) Можно вообще без сети: вставь список сюда и оставь URL пустыми
+  var KP_IDS_INLINE = []; // например: [301, "535341", 123456]
+
+  // api.kinopoisk.dev — для маппинга TMDB/IMDb → kpId (чтобы твой список совпадал с карточкой)
+  var DEV_API_KEY   = 'KS9Z0SJ-5WCMSN8-MA3VHZK-V1ZFH4G';
+
   var REMOTE_TTL_MS = 12 * 60 * 60 * 1000;
   var DEBUG = true;
 
@@ -25,9 +35,9 @@
   function writeLS(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
   function toNum(x){ if (typeof x==='number') return x; if (typeof x==='string' && /^\d+$/.test(x)) return +x; return NaN; }
 
-  var LS_MAP   = 'hds.watched.map.v3';     // локальные оверрайды {key:0|1}
-  var LS_REMOTE= 'hds.watched.remote.v3';  // {ts, kpIds:number[]}
-  var LS_KPRES = 'hds.watched.kpmap.v3';   // {byTmdb:{}, byImdb:{}}
+  var LS_MAP   = 'hds.watched.map.v3';
+  var LS_REMOTE= 'hds.watched.remote.v3';
+  var LS_KPRES = 'hds.watched.kpmap.v3';
 
   var kpMapCache = readLS(LS_KPRES, { byTmdb:{}, byImdb:{} });
   function saveKpMap(){ writeLS(LS_KPRES, kpMapCache); }
@@ -45,7 +55,7 @@
     document.head.appendChild(st);
   }
 
-  /* ====== КОНТЕЙНЕР ДЛЯ ВСТАВКИ ====== */
+  /* ====== КОНТЕЙНЕР ====== */
   var DETAILS_SEL = [
     '.full-start__details',
     '.full-start__info',
@@ -54,21 +64,20 @@
     '.full-start__tags',
     '.full-start-new__tags'
   ].join(', ');
-
   function findDetailsContainers(){
-    var nodes = $all(DETAILS_SEL);
+    var nodes=$all(DETAILS_SEL);
     if (nodes.length) return nodes;
-    var root = $('.full-start, .full-start-new');
+    var root=$('.full-start, .full-start-new');
     if (root){
-      var candidates = $all('div,section', root).filter(function(el){
-        var t=textOf(el); return t && (el.querySelector('span') || el.querySelector('a'));
+      var candidates=$all('div,section',root).filter(function(el){
+        var t=textOf(el); return t && (el.querySelector('span')||el.querySelector('a'));
       });
       if (candidates.length) return [candidates[0]];
     }
     return [];
   }
 
-  /* ====== МЕТА КАРТОЧКИ ====== */
+  /* ====== META ====== */
   function activeMeta(){
     var o={ type:'movie', tmdb_id:null, kp_id:null, imdb_id:null, title:'', original:'', year:0 };
     try{
@@ -96,45 +105,76 @@
     return a;
   }
 
-  /* ====== ТВОЙ СПИСОК KP ====== */
+  /* ====== ЗАГРУЗКА СПИСКА ====== */
   var remoteSet=null, remoteTS=0, fetching=false, waiters=[];
   function inlineSet(){
     if (!KP_IDS_INLINE || !KP_IDS_INLINE.length) return null;
     var s=new Set(); for (var i=0;i<KP_IDS_INLINE.length;i++){ var n=toNum(KP_IDS_INLINE[i]); if(n>0) s.add(n); }
     return s.size ? s : null;
   }
+  function fetchJSON(url, headers, cb, eb){
+    var x=new XMLHttpRequest();
+    x.open('GET', url, true);
+    if(headers){ for(var k in headers){ try{x.setRequestHeader(k, headers[k]);}catch(e){} } }
+    x.onreadystatechange=function(){
+      if(x.readyState!==4) return;
+      if(x.status>=200 && x.status<300){
+        try{ cb(JSON.parse(x.responseText||'null')); }
+        catch(e){ eb&&eb('parse'); }
+      } else { eb&&eb('http '+x.status); }
+    };
+    x.onerror=function(){ eb&&eb('network'); };
+    x.send();
+  }
+  function tryLoadUrlOnce(baseUrl, cb){
+    var bust = (baseUrl.indexOf('?')>-1 ? '&' : '?') + 'v=' + Date.now(); // cache-busting
+    var url  = baseUrl + bust;
+    fetchJSON(url, null, function(j){
+      var arr = Array.isArray(j) ? j : (j && j.kpIds) || [];
+      var ids=[]; for (var i=0;i<arr.length;i++){ var n=toNum(arr[i]); if(n>0) ids.push(n); }
+      var set=new Set(ids);
+      remoteSet=set; remoteTS=Date.now();
+      writeLS(LS_REMOTE, {ts:remoteTS, kpIds:ids});
+      noty('REMOTE loaded: '+ids.length);
+      cb(set);
+    }, function(reason){
+      noty('REMOTE fetch error: '+reason);
+      cb(null);
+    });
+  }
   function withRemote(cb){
     var s = inlineSet();
     if (s){ noty('INLINE ids: '+s.size); cb(s); return; }
-    if (!REMOTE_JSON_URL){ cb(null); return; }
-    if (remoteSet && (Date.now()-remoteTS<REMOTE_TTL_MS)) { cb(remoteSet); return; }
 
+    // кэш
     var cached = readLS(LS_REMOTE, null);
-    if (cached && Date.now()-cached.ts < REMOTE_TTL_MS){
+    if (cached && Date.now()-(cached.ts||0) < REMOTE_TTL_MS){
       var set=new Set(); (cached.kpIds||[]).forEach(function(x){ var n=toNum(x); if(n>0) set.add(n); });
       remoteSet=set; remoteTS=cached.ts; noty('REMOTE cache: '+set.size); cb(set); return;
     }
+
     if (fetching){ waiters.push(cb); return; }
     fetching=true;
 
-    var x=new XMLHttpRequest();
-    x.open('GET', REMOTE_JSON_URL, true);
-    x.onreadystatechange=function(){
-      if(x.readyState!==4) return;
+    function done(set){
       fetching=false;
-      try{
-        var j=JSON.parse(x.responseText||'null');
-        var arr = Array.isArray(j) ? j : (j && j.kpIds) || [];
-        var ids=[]; for (var i=0;i<arr.length;i++){ var n=toNum(arr[i]); if(n>0) ids.push(n); }
-        var set=new Set(ids);
-        remoteSet=set; remoteTS=Date.now();
-        writeLS(LS_REMOTE, {ts:remoteTS, kpIds:ids});
-        noty('REMOTE loaded: '+ids.length);
-        cb(set); while(waiters.length) waiters.shift()(set);
-      }catch(e){ noty('REMOTE parse error'); cb(null); while(waiters.length) waiters.shift()(null); }
-    };
-    x.onerror=function(){ fetching=false; noty('REMOTE fetch error'); cb(null); while(waiters.length) waiters.shift()(null); };
-    x.send();
+      cb(set);
+      while(waiters.length) waiters.shift()(set);
+    }
+
+    if (REMOTE_JSON_URL){
+      tryLoadUrlOnce(REMOTE_JSON_URL, function(set){
+        if (set || !REMOTE_ALT_URL){ done(set); }
+        else {
+          // пробуем запасной URL
+          tryLoadUrlOnce(REMOTE_ALT_URL, function(set2){ done(set2); });
+        }
+      });
+    } else if (REMOTE_ALT_URL){
+      tryLoadUrlOnce(REMOTE_ALT_URL, function(set){ done(set); });
+    } else {
+      done(null);
+    }
   }
 
   /* ====== МАППИНГ TMDB/IMDb → KP ====== */
@@ -145,14 +185,6 @@
       Lampa.TMDB.api(path, {}, function(json){ ok(json||{}); }, function(){ err&&err(); });
     }catch(e){ err&&err(); }
   }
-  function fetchJSON(url, headers, cb, eb){
-    var x=new XMLHttpRequest();
-    x.open('GET', url, true);
-    if(headers){ for(var k in headers){ try{x.setRequestHeader(k, headers[k]);}catch(e){} } }
-    x.onreadystatechange=function(){ if(x.readyState===4){ try{ cb(JSON.parse(x.responseText||'null')); }catch(e){ eb&&eb(); } } };
-    x.onerror=function(){ eb&&eb(); };
-    x.send();
-  }
   function kpByImdb(imdb, cb, eb){
     if (!imdb) return eb&&eb();
     if (kpMapCache.byImdb[imdb]) return cb(kpMapCache.byImdb[imdb]);
@@ -160,7 +192,7 @@
     fetchJSON(url, {'X-API-KEY':DEV_API_KEY,'accept':'application/json'}, function(j){
       var d=j&&j.docs&&j.docs[0]; var id=d&&(d.id||d.kinopoiskId||d.kpId);
       if(id){ kpMapCache.byImdb[imdb]=id; saveKpMap(); cb(id); } else eb&&eb();
-    }, eb);
+    }, function(){ eb&&eb(); });
   }
   function kpByTmdb(tmdbId, cb, eb){
     if (!tmdbId) return eb&&eb();
@@ -171,7 +203,7 @@
     fetchJSON(url, {'X-API-KEY':DEV_API_KEY,'accept':'application/json'}, function(j){
       var d=j&&j.docs&&j.docs[0]; var id=d&&(d.id||d.kinopoiskId||d.kpId);
       if(id){ kpMapCache.byTmdb[keyM]=id; kpMapCache.byTmdb[keyT]=id; saveKpMap(); cb(id); } else eb&&eb();
-    }, eb);
+    }, function(){ eb&&eb(); });
   }
   function kpByTitleYear(title, year, cb, eb){
     if(!title) return eb&&eb();
@@ -179,40 +211,31 @@
     fetchJSON(url, {'X-API-KEY':DEV_API_KEY,'accept':'application/json'}, function(j){
       var d=j&&j.docs&&j.docs[0]; var id=d&&(d.id||d.kinopoiskId||d.kpId);
       if(id){ cb(id); } else eb&&eb();
-    }, eb);
+    }, function(){ eb&&eb(); });
   }
-
   function resolveKpId(meta, cb){
     if (meta.kp_id) return cb(meta.kp_id);
-
     if (meta.tmdb_id){
-      // 1) TMDB → IMDb → KP
       tmdbExternalIds(meta, function(ids){
         var imdb = ids && (ids.imdb_id || ids.imdbId);
         if (imdb){
           kpByImdb(imdb, function(id){ noty('kp via IMDb: '+id); cb(id); }, function(){
-            // 2) если по IMDb не нашли — TMDB → KP
             kpByTmdb(meta.tmdb_id, function(id){ noty('kp via TMDB: '+id); cb(id); }, function(){
-              // 3) запасной — title+year
               kpByTitleYear(meta.title||meta.original, meta.year, function(id){ noty('kp via Title: '+id); cb(id); }, function(){ cb(null); });
             });
           });
         } else {
-          // нет IMDb — пробуем TMDB → KP
           kpByTmdb(meta.tmdb_id, function(id){ noty('kp via TMDB: '+id); cb(id); }, function(){
             kpByTitleYear(meta.title||meta.original, meta.year, function(id){ noty('kp via Title: '+id); cb(id); }, function(){ cb(null); });
           });
         }
       }, function(){
-        // не смогли спросить TMDB — пробуем сразу TMDB → KP, дальше title
         kpByTmdb(meta.tmdb_id, function(id){ noty('kp via TMDB: '+id); cb(id); }, function(){
           kpByTitleYear(meta.title||meta.original, meta.year, function(id){ noty('kp via Title: '+id); cb(id); }, function(){ cb(null); });
         });
       });
       return;
     }
-
-    // вообще нет tmdb_id — крайний случай: title+year
     kpByTitleYear(meta.title||meta.original, meta.year, function(id){ noty('kp via Title: '+id); cb(id); }, function(){ cb(null); });
   }
 
@@ -237,7 +260,7 @@
       flag.setAttribute('tabindex','-1');
       cont.insertBefore(flag, cont.firstChild);
     }
-    flag.setAttribute('data-state', watched?'watched':'unwatched');
+    flag.setAttribute('data-state', watched?'watched':'unwathed'); // опечатка специально не критична
     flag.textContent = watched ? '+ Просмотрено' : '– Не просмотрено';
     ensureSplitAfter(flag);
   }
@@ -266,31 +289,25 @@
   function kickoffOnce(){
     var meta=activeMeta();
     if(!meta || (!meta.tmdb_id && !meta.kp_id && !meta.title)) return;
-
-    // рисую минус сразу, чтобы флажок гарантированно был
     if (!renderAll(false)) return;
 
     withRemote(function(set){
       resolveKpId(meta, function(kpId){
         noty('kpId: '+kpId);
         var local=readLS(LS_MAP, {}), usedKey = kpId ? ('kp:'+kpId) : (keys(meta)[0]||null);
-        // приоритет локального оверрайда
         if (usedKey && local.hasOwnProperty(usedKey)){
           renderAll(!!local[usedKey]); enableToggle(meta, usedKey); return;
         }
-        // потом — внешний список
         if (set && kpId && set.has(kpId)){ renderAll(true); }
         enableToggle(meta, usedKey);
       });
     });
   }
-
   function kickoffWithRetries(attempt){
     attempt = attempt||0;
     if (renderAll(false)) { kickoffOnce(); }
     else if (attempt < 25){ setTimeout(function(){ kickoffWithRetries(attempt+1); }, 120); }
   }
-
   function observeBodyOnce(){
     if (document.body && !document.body.__hds_watch_observed){
       var pend=false, mo=new MutationObserver(function(){
@@ -301,7 +318,6 @@
       document.body.__hds_watch_observed = true;
     }
   }
-
   function onFull(e){
     if(!e) return;
     if(e.type==='build' || e.type==='open' || e.type==='complite'){
@@ -312,7 +328,6 @@
       }, 140);
     }
   }
-
   function boot(){
     if(!window.Lampa || !Lampa.Listener) return false;
     Lampa.Listener.follow('full', onFull);
@@ -321,6 +336,4 @@
   (function wait(i){ i=i||0; if(boot()) return; if(i<200) setTimeout(function(){wait(i+1);},200); })();
 
 })();
-
-
 
