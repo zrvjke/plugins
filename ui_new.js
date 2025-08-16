@@ -2,12 +2,12 @@
  * Lampa plugin: Hide Details Noise
  *  - Movies: remove HH:MM from details line
  *  - Series: remove Seasons/Episodes in details line + "Следующая … / Осталось дней: N"
- *  - REMOVE Comments section (по заголовкам/классам, вокруг блока «Актёры», якорные прокладки)
- *  - REMOVE full Seasons block in series (диапазон "Сезон …" → перед "Актёры", без затрагивания «Актёров»)
+ *  - REMOVE Comments section (by heading/classes and between Actors → (Recommendations/Collection))
+ *  - REMOVE full Seasons block in series (range "Сезон …" → before "Актёры", включая якорные прокладки)
  *  - Hard remove + forced reflow to avoid focus/scroll stops
- *  - Instant (no-delay) neutralization of anchors/comments to prevent anchor registration
  *
- * Version: 1.9.5 (ES5, Unicode-safe)
+ * Version: 1.8.5 (ES5, Unicode-safe)
+ * Author: Roman + ChatGPT
  */
 
 (function () {
@@ -21,13 +21,7 @@
   function isPureNumber(s){ return /^\d+$/.test((s||'').trim()); }
   function isTimeToken(s){ return /^\d{1,2}:\d{2}$/.test((s||'').trim()); }
   function norm(s){ return (s||'').replace(/\u00A0/g,' ').replace(/\s+/g,' ').trim().toLowerCase(); }
-  function containsHeading(el, re){
-    if (!el) return false;
-    var nodes = el.querySelectorAll && el.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p');
-    if (!nodes) return false;
-    for (var i=0;i<nodes.length;i++){ if (re.test(norm(textOf(nodes[i])))) return true; }
-    return false;
-  }
+
   function isSeparatorNode(el){
     if (!el) return false;
     var cls = (el.className||'')+'';
@@ -42,13 +36,17 @@
       first = container.firstElementChild;
     }
   }
-  // пересчитать верстку/навигацию после удаления
+  // лёгкий пересчёт после удаления секций, чтобы лента не "цеплялась"
   function forceReflow(){
     try{
       void document.body.offsetHeight;
       window.dispatchEvent(new Event('resize'));
+      window.dispatchEvent(new Event('scroll'));
       var scrollers = document.querySelectorAll('.scroll, .content, .layout__body, .full, .full-start, .full-start-new');
-      for (var i=0;i<scrollers.length;i++){ scrollers[i].scrollTop = scrollers[i].scrollTop; }
+      for (var i=0;i<scrollers.length;i++){ 
+        scrollers[i].scrollTop = scrollers[i].scrollTop; 
+        scrollers[i].dispatchEvent(new Event('scroll'));
+      }
     }catch(e){}
   }
 
@@ -78,7 +76,7 @@
     return /^\d{1,2}$/.test(s) || new RegExp('^'+RU_MONTH+'$','i').test(s) ||
            new RegExp('^'+EN_MONTH+'$','i').test(s) || /^\d{4}$/.test(s);
   }
-  // мягкие проверки: ловлю внутри одного span
+  // мягкие проверки: слово встречается где угодно в span (важно для "Следующая 19 августа" в одном span)
   function containsNextLabel(t){ return /следующ|next\b/i.test(t||''); }
   function containsRemainLabel(t){ return /осталось\s*дней|days\s*left/i.test(t||''); }
   function isSlashDivider(t){ return /^[/|\\-]$/.test((t||'').trim()); }
@@ -117,7 +115,7 @@
         rm.push(s); continue;
       }
 
-      // Series: "Следующая … / Осталось дней: N" — ловлю и внутри одного span
+      // Series: "Следующая … / Осталось дней: N" — теперь ловим и «внутри» span
       if (containsNextLabel(txt) || containsRemainLabel(txt)){
         var p3=s.previousElementSibling, n3=s.nextElementSibling;
         if (isSeparatorNode(p3)) rm.push(p3);
@@ -132,7 +130,7 @@
         continue;
       }
 
-      // строгий "Осталось дней: N"
+      // строгий «Осталось дней: N» отдельным блоком
       if (/^(?:осталось\s+дней|days\s+left)\s*:?\s*\d*\s*$/i.test(txt)){
         var pr=s.previousElementSibling; if (isSeparatorNode(pr)) rm.push(pr);
         var nr=s.nextElementSibling; if (isSeparatorNode(nr)) { rm.push(nr); nr=nr.nextElementSibling; }
@@ -167,7 +165,7 @@
   var RE_SEASONS_HEAD = /^(?:сезон(?:\s*\d+)?|сезоны(?:\s*\d+)?|seasons?(?:\s*\d+)?)$/i;
 
   var COMM_CLASS_SELECTOR = '[class*="comment"],[id*="comment"],[class*="review"],[id*="review"]';
-  var ANCHOR_CLASS_RE = /(anchor|line__head|line__title|line-head)/i;
+  var ANCHOR_SELECTOR = '[class*="anchor"], [id*="anchor"], .line__head, .line__title, .line-head, .split, [class*="line-head"], [class*="full-line"]';
 
   function findFirstHeading(re, root){
     var scope=root||document, nodes=scope.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p'), i,n,t;
@@ -182,20 +180,16 @@
     }
     return el;
   }
-  function protectedFromRemoval(node){
-    // нельзя удалять саму секцию «Актёры» или узлы, что её содержат
-    return containsHeading(node, RE_ACTORS);
-  }
   function removeSectionNode(node){
-    if (!node || protectedFromRemoval(node)) return;
+    if (!node) return;
     var prev = node.previousElementSibling;
+    var next = node.nextElementSibling;
     removeNode(node);
-    // убрать пустые/якорные прокладки рядом, но не заходить в «Актёры»
+    // убрать пустые/якорные прокладки рядом (теперь и previous, и next)
     while (prev){
-      if (protectedFromRemoval(prev)) break;
       var txt = norm(textOf(prev));
-      var cls = ((prev.className||'')+'');
-      if (txt==='' || ANCHOR_CLASS_RE.test(cls) || RE_SEASONS_HEAD.test(txt) || RE_COMM_HEAD.test(txt)){
+      var cls = ((prev.className||'')+'').toLowerCase();
+      if (txt==='' || /anchor|line__head|line__title|line-head|split/.test(cls) || RE_SEASONS_HEAD.test(txt)){
         var p = prev.previousElementSibling;
         removeNode(prev);
         prev = p;
@@ -203,9 +197,20 @@
       }
       break;
     }
+    while (next){
+      var txtn = norm(textOf(next));
+      var clsn = ((next.className||'')+'').toLowerCase();
+      if (txtn==='' || /anchor|line__head|line__title|line-head|split/.test(clsn) || RE_SEASONS_HEAD.test(txtn)){
+        var nn = next.nextElementSibling;
+        removeNode(next);
+        next = nn;
+        continue;
+      }
+      break;
+    }
   }
 
-  // A) комментарии по заголовку
+  // A) комментарии
   function nukeCommentsByHeading(root){
     var scope = root || document;
     var heads = scope.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p');
@@ -215,38 +220,41 @@
       if (!t) continue;
       if (RE_COMM_HEAD.test(t)){
         sec = climbToSection(h,10);
-        if (!protectedFromRemoval(sec)) removeSectionNode(sec);
-        sib = h.nextElementSibling; if (sib && !protectedFromRemoval(sib)) removeSectionNode(sib);
+        removeSectionNode(sec);
+        sib = h.nextElementSibling; if (sib) removeSectionNode(sib);
       }
     }
   }
-
-  // B) назад от Рекомендаций/Коллекции (комменты/якоря/пустые блоки)
   function nukeBetweenActorsAndNext(root){
     var scope=root||document;
     var hActors=findFirstHeading(RE_ACTORS,scope);
     var hNext = findFirstHeading(RE_RECS,scope) || findFirstHeading(RE_COLL,scope);
+    if (!hActors && !hNext){
+      var any = scope.querySelectorAll(COMM_CLASS_SELECTOR), i;
+      for (i=0;i<any.length;i++) removeSectionNode(any[i]);
+      return;
+    }
     if (!hNext){
-      var any2 = scope.querySelectorAll(COMM_CLASS_SELECTOR+', [class*="anchor"], [id*="anchor"]'), k;
-      for (k=0;k<any2.length;k++) if (!protectedFromRemoval(any2[k])) removeSectionNode(any2[k]);
+      var any2 = scope.querySelectorAll(COMM_CLASS_SELECTOR), k;
+      for (k=0;k<any2.length;k++) removeSectionNode(any2[k]);
       return;
     }
     var secActors = hActors ? climbToSection(hActors,10) : null;
     var secNext   = climbToSection(hNext,10);
 
     var cur = secNext.previousElementSibling, guard=0;
-    while (cur && guard++<80){
-      if (secActors && (cur===secActors || containsHeading(cur, RE_ACTORS))) break;
+    while (cur && guard++<200){
+      if (secActors && cur===secActors) break;
       var looks=false;
       if (cur.querySelector) {
         if (cur.querySelector(COMM_CLASS_SELECTOR)) looks=true;
         var head = cur.querySelector('h1,h2,h3,h4,h5,h6,div,span,p');
-        if (!looks && head && (RE_COMM_HEAD.test(norm(textOf(head))))) looks=true;
+        if (!looks && head && RE_COMM_HEAD.test(norm(textOf(head)))) looks=true;
+        var plusBtn = cur.querySelector('button,div,span');
+        if (!looks && plusBtn && textOf(plusBtn)==='+') looks=true;
       }
-      var cls = ((cur.className||'')+'');
-      if (!looks && (ANCHOR_CLASS_RE.test(cls) || norm(textOf(cur))==='')) looks = true;
-
-      if (looks && !protectedFromRemoval(cur)){
+      var cls = ((cur.className||'')+'').toLowerCase();
+      if (looks || norm(textOf(cur))==='' || /anchor|line__head|line__title|line-head|split/i.test(cls)){
         var next = cur.previousElementSibling;
         removeSectionNode(cur);
         cur = next;
@@ -254,46 +262,18 @@
       }
       break;
     }
-  }
-
-  // C) ВПЕРЁД от Актёров: удаляем ТОЛЬКО якорные/комментные/пустые прокладки (не секции контента)
-  function nukeForwardFromActors(root){
-    var scope=root||document;
-    var hActors=findFirstHeading(RE_ACTORS,scope);
-    if (!hActors) return;
-
-    var start = climbToSection(hActors,10);
-
-    var cur = start.nextElementSibling, guard=0;
-    while (cur && guard++<100){
-      if (containsHeading(cur, RE_RECS) || containsHeading(cur, RE_COLL)) break;
-      if (containsHeading(cur, RE_ACTORS)) break; // безопасность
-
-      var txt = norm(textOf(cur));
-      var cls = ((cur.className||'')+'');
-
-      var isAnchorish = ANCHOR_CLASS_RE.test(cls);
-      var isCommentish = (cur.querySelector && cur.querySelector(COMM_CLASS_SELECTOR)) ||
-                         containsHeading(cur, RE_COMM_HEAD);
-      var isTrivial = (txt==='' && (!cur.children || cur.children.length<=1));
-
-      if ((isAnchorish || isCommentish || isTrivial) && !protectedFromRemoval(cur)){
-        var next = cur.nextElementSibling;
-        removeSectionNode(cur);
-        cur = next;
-        continue;
-      }
-      break; // первый «настоящий» блок — выходим
+    // пост-чистка: если после удаления перед secNext остался мусор
+    var remainingPrev = secNext.previousElementSibling;
+    if (remainingPrev && (norm(textOf(remainingPrev)) === '' || /anchor|line__head|line__title|line-head|split/i.test(((remainingPrev.className||'')+'').toLowerCase()))) {
+      removeSectionNode(remainingPrev);
     }
   }
-
-  // D) добивка по классам/ID
   function nukeByClasses(root){
-    var scope=root||document, nodes=scope.querySelectorAll(COMM_CLASS_SELECTOR+', [class*="anchor"], [id*="anchor"]'), i;
-    for (i=0;i<nodes.length;i++) if (!protectedFromRemoval(nodes[i])) removeSectionNode(nodes[i]);
+    var scope=root||document, nodes=scope.querySelectorAll(COMM_CLASS_SELECTOR), i;
+    for (i=0;i<nodes.length;i++) removeSectionNode(nodes[i]);
   }
 
-  // E) сезоны: диапазон "Сезон …" → до «Актёры», с защитой «Актёров»
+  // B) сезоны: удалить ВЕСЬ диапазон "Сезон …" → до секции «Актёры»
   function nukeSeasonsRange(root){
     var scope = root || document;
     var hSeas  = findFirstHeading(RE_SEASONS_HEAD, scope);
@@ -301,13 +281,12 @@
 
     var start = climbToSection(hSeas, 10);
 
-    // зачистить перед заголовком (якорные/пустые прокладки)
+    // снесём всё, что перед заголовком похоже на якорь/шапку/пустую прокладку
     var prev = start.previousElementSibling;
     while (prev){
-      if (protectedFromRemoval(prev)) break;
       var ptxt = norm(textOf(prev));
-      var pcl  = ((prev.className||'')+'');
-      if (ptxt==='' || ANCHOR_CLASS_RE.test(pcl) || RE_SEASONS_HEAD.test(ptxt)){
+      var pcl  = ((prev.className||'')+'').toLowerCase();
+      if (ptxt==='' || /anchor|line__head|line__title|line-head/.test(pcl) || RE_SEASONS_HEAD.test(ptxt)){
         var pp = prev.previousElementSibling;
         removeNode(prev);
         prev = pp;
@@ -317,28 +296,50 @@
     }
 
     var hActors = findFirstHeading(RE_ACTORS, scope);
-    var endSection = hActors ? climbToSection(hActors,10) : null;
+    var hStop   = hActors || findFirstHeading(RE_COMM_HEAD, scope) || findFirstHeading(RE_RECS, scope) || findFirstHeading(RE_COLL, scope);
+    var endSection = hStop ? climbToSection(hStop,10) : null;
 
     var cur = start, guard=0;
-    while (cur && guard++<160){
-      if (endSection && (cur===endSection || containsHeading(cur, RE_ACTORS))) break;
+    while (cur && guard++<200){
+      if (endSection && cur === endSection) break;
       var next = cur.nextElementSibling;
-      if (!protectedFromRemoval(cur)) removeSectionNode(cur);
+      removeSectionNode(cur);
       cur = next;
     }
   }
 
+  // Дополнительная глобальная чистка якорей
+  function nukeAnchors(root){
+    var scope = root || document;
+    var anchors = scope.querySelectorAll(ANCHOR_SELECTOR);
+    for (var i=0; i<anchors.length; i++) {
+      removeSectionNode(anchors[i]);
+    }
+  }
+
+  // Чистка пустых контейнеров в full-view
+  function cleanupEmpty(root){
+    var scope = root || document;
+    var divs = scope.querySelectorAll('.full-start > div, .full-start-new > div, .full > div');
+    for (var i=divs.length-1; i>=0; i--){
+      var d = divs[i];
+      if (norm(textOf(d)) === '' && (!d.children || d.children.length <= 1)) {
+        removeNode(d);
+      }
+    }
+  }
+
   function nukeAllNoise(root){
-    // секции:
     nukeCommentsByHeading(root);
     nukeBetweenActorsAndNext(root);
-    nukeForwardFromActors(root);  // не трогаю «Актёров», только их «хвост»
     nukeByClasses(root);
     nukeSeasonsRange(root);
+    nukeAnchors(root);
+    cleanupEmpty(root);
     forceReflow();
   }
 
-  // ---------- CSS страховка от краткого мигания ----------
+  // ---------- CSS safety net (на случай краткого мигания) ----------
   function injectCssOnce(){
     if (document.getElementById('hds-comments-css')) return;
     var style = document.createElement('style');
@@ -348,42 +349,12 @@
       '.full [class*="comment"], .full-start [class*="comment"], .full-start-new [class*="comment"],' +
       '.full [id*="comment"], .full-start [id*="comment"], .full-start-new [id*="comment"],' +
       '.full [class*="review"], .full-start [class*="review"], .full-start-new [class*="review"],' +
-      '.full [id*="review"], .full-start [id*="review"], .full-start-new [id*="review"]{display:none !important;}';
+      '.full [id*="review"], .full-start [id*="review"], .full-start-new [id*="review"]{display:none !important;}' +
+      '[class*="anchor"], [id*="anchor"], .line__head, .line__title, .line-head, .split{display:none !important;}';
     document.head.appendChild(style);
   }
 
-  // ---------- INSTANT observer (без задержек) для новых якорей/комментов под Актёрами ----------
-  var instantObserved = false;
-  function ensureInstantObserver(){
-    if (instantObserved || !document.body) return;
-    var mo = new MutationObserver(function(muts){
-      for (var m=0;m<muts.length;m++){
-        var mut = muts[m];
-        // обрабатываем только добавленные узлы — сразу, без таймаутов
-        if (mut.addedNodes && mut.addedNodes.length){
-          for (var k=0;k<mut.addedNodes.length;k++){
-            var node = mut.addedNodes[k];
-            if (!(node instanceof HTMLElement)) continue;
-            var cls = ((node.className||'')+'');
-            var txt = norm(textOf(node));
-            // якорные прокладки / комменты
-            if (ANCHOR_CLASS_RE.test(cls) || (node.querySelector && node.querySelector(COMM_CLASS_SELECTOR)) ||
-                RE_COMM_HEAD.test(txt) || containsHeading(node, RE_COMM_HEAD)){
-              if (!protectedFromRemoval(node)) removeSectionNode(node);
-            }
-          }
-        }
-      }
-    });
-    // слушаем только область карточки (уменьшаем нагрузку)
-    var roots = document.querySelectorAll('.full, .full-start, .full-start-new, .content, .layout__body');
-    for (var i=0;i<roots.length;i++){
-      mo.observe(roots[i], {childList:true, subtree:true});
-    }
-    instantObserved = true;
-  }
-
-  // ---------- root observer (дебаунс) ----------
+  // ---------- root observer ----------
   var rootObserved=false;
   function ensureRootObserver(){
     if (rootObserved || !document.body) return;
@@ -391,11 +362,12 @@
       if (pend) return; pend=true;
       setTimeout(function(){
         pend=false;
-        // инфострока
+        // инфострока + секции
         var nodes=document.querySelectorAll(SELECTORS_DETAILS), i;
         for (i=0;i<nodes.length;i++) stripTokensIn(nodes[i]);
-        // секции
         nukeAllNoise(document);
+        nukeAnchors(document);
+        cleanupEmpty(document);
         injectCssOnce();
       },25);
     });
@@ -407,13 +379,12 @@
   function handleFullEvent(e){
     if (!e || !e.type) return;
     if (e.type==='build' || e.type==='open' || e.type==='complite'){
-      // максимально рано — чистим всё, и сразу включаем мгновенный наблюдатель
+      // максимально рано — без задержки, чтобы не попали в реестр якорей
       (function(){
         var nodes=document.querySelectorAll(SELECTORS_DETAILS), i;
         for (i=0;i<nodes.length;i++) stripTokensIn(nodes[i]);
         nukeAllNoise(document);
         injectCssOnce();
-        ensureInstantObserver();  // <— ключевой: мгновенно выбивает новые якоря после «Актёров»
         ensureRootObserver();
       })();
     }
@@ -426,7 +397,6 @@
       for (i=0;i<nodes.length;i++) stripTokensIn(nodes[i]);
       nukeAllNoise(document);
       injectCssOnce();
-      ensureInstantObserver();
       ensureRootObserver();
     },120);
     return true;
@@ -440,11 +410,8 @@
       for (i=0;i<nodes.length;i++) stripTokensIn(nodes[i]);
       nukeAllNoise(document);
       injectCssOnce();
-      ensureInstantObserver();
       ensureRootObserver();
     },200);
   })();
 
 })();
-
-
