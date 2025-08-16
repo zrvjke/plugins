@@ -166,4 +166,5 @@
     } catch (e) {
         // Do nothing if registration fails
     }
+
 })();
