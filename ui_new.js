@@ -1,20 +1,22 @@
 /**
- * Lampa plugin: Hide Duration (movies) & Seasons/Episodes & Next-air (series)
- * Version: 1.3.1 (ASCII-safe, stabilized)
+ * Lampa plugin: Hide Details Noise
+ *  - Duration (movies)
+ *  - Seasons/Episodes + Next-air (series)
+ *  - Comments block (both movies & series)
+ *
+ * Version: 1.4.0 (ASCII-safe, stable)
  * Author: Roman + ChatGPT
  *
- * Фильмы: скрывает HH:MM и соседний разделитель.
- * Сериалы: скрывает "Сезоны/Серии" (RU/EN) и блок "Следующая <дата> / Осталось дней: N"
- *          вместе с левым разделителем. Работает и если весь блок в одном <span>.
- *
- * Совместимость: full-start*, full-start-new*, события 'full' (build/open/complite),
- * MutationObserver без дублей, ES5, ASCII-safe (\uXXXX).
+ * Совместимость:
+ *  - Старые/новые селекторы: full-start*, full-start-new*.
+ *  - События 'full' (build/open/complite) + MutationObserver (без дублей).
+ *  - ES5, без NodeList.forEach/Set/WeakSet; все RU-строки в регэкспах — через \uXXXX.
  */
 
 (function () {
   'use strict';
 
-  var SELECTORS = '.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info';
+  var SELECTORS_DETAILS = '.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info';
 
   // ----------------- helpers -----------------
 
@@ -26,7 +28,7 @@
     return /^\d{1,2}:\d{2}$/.test((s || '').trim());
   }
 
-  // Разделитель: фирменные split-элементы или одиночные символы . • · | /
+  // Разделитель: сплиты Лампы или одиночные символы . • · | /
   function isSeparatorNode(el) {
     if (!el) return false;
     var cls = (el.className || '') + '';
@@ -36,6 +38,12 @@
 
   function removeNode(node) {
     if (node && node.parentNode) node.parentNode.removeChild(node);
+  }
+
+  function hideNode(node) {
+    if (!node) return;
+    node.style.display = 'none';
+    node.setAttribute('data-hds-hidden', '1');
   }
 
   function cleanupLeadingSeparators(container) {
@@ -81,19 +89,20 @@
 
   // ----------------- "Next air" detection (ASCII-safe) -----------------
 
-  // RU months (genitive)
+  // RU months (genitive) и EN months
   var RU_MONTH = '(?:\\u044f\\u043d\\u0432\\u0430\\u0440\\u044f|\\u0444\\u0435\\u0432\\u0440\\u0430\\u043b\\u044f|\\u043c\\u0430\\u0440\\u0442\\u0430|\\u0430\\u043f\\u0440\\u0435\\u043b\\u044f|\\u043c\\u0430\\u044f|\\u0438\\u044e\\u043d\\u044f|\\u0438\\u044e\\u043b\\u044f|\\u0430\\u0432\\u0433\\u0443\\u0441\\u0442\\u0430|\\u0441\\u0435\\u043d\\u0442\\u044f\\u0431\\u0440\\u044f|\\u043e\\u043a\\u0442\\u044f\\u0431\\u0440\\u044f|\\u043d\\u043e\\u044f\\u0431\\u0440\\u044f|\\u0434\\u0435\\u043a\\u0430\\u0431\\u0440\\u044f)';
-  // EN months
   var EN_MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
 
   function isDatePiece(txt) {
     if (!txt) return false;
     var t = (txt || '').trim().toLowerCase();
-    return /^\d{1,2}$/.test(t) || new RegExp('^' + RU_MONTH + '$', 'i').test(t) ||
-           new RegExp('^' + EN_MONTH + '$', 'i').test(t) || /^\d{4}$/.test(t);
+    return /^\d{1,2}$/.test(t) ||
+           new RegExp('^' + RU_MONTH + '$', 'i').test(t) ||
+           new RegExp('^' + EN_MONTH + '$', 'i').test(t) ||
+           /^\d{4}$/.test(t);
   }
 
-  // "Следующая/Следующий/Следующее/Следующие [серия/эпизод]?" / "Next [episode]?"
+  // "Следующая/Следующий/Следующее/Следующие [серия/эпизод]" / "Next (episode)"
   var RE_NEXT_LABEL = new RegExp(
     '^(?:' +
       '\\u0421\\u043b\\u0435\\u0434\\u0443\\u044e\\u0449' +
@@ -103,7 +112,7 @@
     ')\\s*:?', 'i'
   );
 
-  // "Осталось дней" / "Days left" (отдельная метка или inline с числом)
+  // "Осталось дней" / "Days left"
   var RE_REMAIN_LABEL = new RegExp('^(?:\\u041e\\u0441\\u0442\\u0430\\u043b\\u043e\\u0441\\u044c\\s+\\u0434\\u043d\\u0435\\u0439|days\\s+left)\\s*:?$', 'i');
   var RE_REMAIN_INLINE = new RegExp('^(?:\\u041e\\u0441\\u0442\\u0430\\u043b\\u043e\\u0441\\u044c\\s+\\u0434\\u043d\\u0435\\u0439|days\\s+left)\\s*:?\\s*\\d+\\s*$', 'i');
 
@@ -111,7 +120,45 @@
   function isRemainLabelToken(txt) { return !!txt && RE_REMAIN_LABEL.test(txt); }
   function isRemainInlineToken(txt){ return !!txt && RE_REMAIN_INLINE.test(txt); }
 
-  // ----------------- core per-container -----------------
+  // ----------------- comments block detection -----------------
+
+  // Заголовок "Комментарии"/"Comments"
+  var RE_COMMENTS_HEAD = new RegExp('^(?:\\u041a\\u043e\\u043c\\u043c\\u0435\\u043d\\u0442\\u0430\\u0440\\u0438\\u0438|comments?)$', 'i');
+
+  function hideCommentsBlocks(root) {
+    var scope = root || document;
+
+    // 1) Прячем любые контейнеры с классами/ID, содержащими "comment"
+    var nodes = scope.querySelectorAll('[class*="comment"], [id*="comment"]');
+    var i, n;
+    for (i = 0; i < nodes.length; i++) {
+      n = nodes[i];
+      if (n.getAttribute('data-hds-hidden') === '1') continue;
+      hideNode(n);
+    }
+
+    // 2) Прячем заголовки "Комментарии" и их секции целиком
+    var heads = scope.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p');
+    for (i = 0; i < heads.length; i++) {
+      var h = heads[i];
+      var t = textOf(h);
+      if (!t) continue;
+      if (RE_COMMENTS_HEAD.test(t)) {
+        hideNode(h);
+        // поднимаемся максимум на 4 уровня и прячем ближайший «секционный» контейнер, в котором есть *comment*
+        var up = h, steps = 0;
+        while (up && steps++ < 4) {
+          if (up.querySelector && up.querySelector('[class*="comment"], [id*="comment"]')) {
+            hideNode(up);
+            break;
+          }
+          up = up.parentElement;
+        }
+      }
+    }
+  }
+
+  // ----------------- core per-container (details line) -----------------
 
   function stripTokensIn(container) {
     if (!container) return;
@@ -136,7 +183,7 @@
         continue;
       }
 
-      // 2) СЕРИАЛЫ: inline "Сезоны/Серии"
+      // 2) СЕРИАЛЫ: inline "Сезоны/Серии" (обе формы)
       if (isSeriesInlineToken(txt)) {
         var p2 = span.previousElementSibling;
         var n2 = span.nextElementSibling;
@@ -146,7 +193,7 @@
         continue;
       }
 
-      // 3) СЕРИАЛЫ: раздельные "Сезоны"/"Серии" + число
+      // 3) СЕРИАЛЫ: раздельные "Сезоны|Серии" + число
       if (isSeriesLabelToken(txt)) {
         var leftSep = span.previousElementSibling;
         if (isSeparatorNode(leftSep)) toRemove.push(leftSep);
@@ -168,14 +215,11 @@
       }
 
       // 4) СЕРИАЛЫ: "Следующая … / Осталось дней: N"
-      // Может быть полностью в одном <span>, тогда просто убираем его целиком.
-      if (isNextLabelToken(txt) || isRemainInlineToken(txt) ||
-          (txt && /\\u041e\\u0441\\u0442\\u0430\\u043b\\u043e\\u0441\\u044c\\s+\\u0434\\u043d\\u0435\\u0439/i.test(txt))) {
+      if (isNextLabelToken(txt) || isRemainInlineToken(txt)) {
         var pN = span.previousElementSibling;
-        if (isSeparatorNode(pN)) toRemove.push(pN); // левую точку перед блоком
+        if (isSeparatorNode(pN)) toRemove.push(pN);
         toRemove.push(span);
 
-        // Если блок разбит на несколько спанов — подчистим всё справа:
         var cur = span.nextElementSibling;
         var guard = 0;
         while (cur && guard++ < 20) {
@@ -192,18 +236,20 @@
         continue;
       }
 
-      // 5) СЕРИАЛЫ: если «Осталось дней: N» встречается отдельно
-      if (isRemainInlineToken(txt) || isRemainLabelToken(txt)) {
-        var pR1 = span.previousElementSibling;
-        var nR1 = span.nextElementSibling;
-        if (isSeparatorNode(pR1)) toRemove.push(pR1);
-        if (isSeparatorNode(nR1)) toRemove.push(nR1);
+      if (isRemainLabelToken(txt)) {
+        var pR = span.previousElementSibling;
+        if (isSeparatorNode(pR)) toRemove.push(pR);
 
-        // если это только метка, удалим и число после неё
-        if (isRemainLabelToken(txt) && nR1 && isPureNumber(textOf(nR1))) {
-          var afterNr = nR1.nextElementSibling;
-          if (isSeparatorNode(afterNr)) toRemove.push(afterNr);
-          toRemove.push(nR1);
+        var r = span.nextElementSibling;
+        if (isSeparatorNode(r)) { toRemove.push(r); r = span.nextElementSibling; }
+
+        if (r && isPureNumber(textOf(r))) {
+          var afterR = r.nextElementSibling;
+          if (isSeparatorNode(afterR)) toRemove.push(afterR);
+          toRemove.push(r);
+        } else {
+          var rsep2 = span.nextElementSibling;
+          if (isSeparatorNode(rsep2)) toRemove.push(rsep2);
         }
         toRemove.push(span);
         continue;
@@ -218,14 +264,14 @@
     cleanupLeadingSeparators(container);
   }
 
-  function scan(root) {
+  function scanDetails(root) {
     var scope = root || document;
-    var nodes = scope.querySelectorAll(SELECTORS);
+    var nodes = scope.querySelectorAll(SELECTORS_DETAILS);
     var i;
     for (i = 0; i < nodes.length; i++) stripTokensIn(nodes[i]);
   }
 
-  // ----------------- observers (без дублей) -----------------
+  // ----------------- observers -----------------
 
   function observeDetails(element) {
     if (!element || element.getAttribute('data-hds-observed') === '1') return;
@@ -244,10 +290,27 @@
     element.setAttribute('data-hds-observed', '1');
   }
 
-  function attachObserversIn(root) {
-    var nodes = (root || document).querySelectorAll(SELECTORS);
+  function attachDetailsObservers(root) {
+    var nodes = (root || document).querySelectorAll(SELECTORS_DETAILS);
     var i;
     for (i = 0; i < nodes.length; i++) observeDetails(nodes[i]);
+  }
+
+  // Корневой наблюдатель для комментариев (и прочих поздних вставок)
+  var rootObserved = false;
+  function ensureRootObserver() {
+    if (rootObserved || !document.body) return;
+    var pending = false;
+    var obs = new MutationObserver(function () {
+      if (pending) return;
+      pending = true;
+      setTimeout(function () {
+        pending = false;
+        hideCommentsBlocks(document);
+      }, 50);
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+    rootObserved = true;
   }
 
   // ----------------- Lampa events & boot -----------------
@@ -256,8 +319,10 @@
     if (!e || !e.type) return;
     if (e.type === 'build' || e.type === 'open' || e.type === 'complite') {
       setTimeout(function () {
-        scan(document);
-        attachObserversIn(document);
+        scanDetails(document);
+        attachDetailsObservers(document);
+        hideCommentsBlocks(document);
+        ensureRootObserver();
       }, 50);
     }
   }
@@ -266,9 +331,12 @@
     if (typeof window === 'undefined' || typeof window.Lampa === 'undefined' || !window.Lampa.Listener) return false;
     window.Lampa.Listener.follow('full', handleFullEvent);
 
+    // первичный проход (если уже открыта карточка)
     setTimeout(function () {
-      scan(document);
-      attachObserversIn(document);
+      scanDetails(document);
+      attachDetailsObservers(document);
+      hideCommentsBlocks(document);
+      ensureRootObserver();
     }, 200);
 
     return true;
@@ -280,11 +348,15 @@
     if (tries < 200) {
       setTimeout(function () { waitForLampa(tries + 1); }, 200);
     } else {
+      // запасной одноразовый проход
       setTimeout(function () {
-        scan(document);
-        attachObserversIn(document);
+        scanDetails(document);
+        attachDetailsObservers(document);
+        hideCommentsBlocks(document);
+        ensureRootObserver();
       }, 200);
     }
   })();
 
 })();
+
