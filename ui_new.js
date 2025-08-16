@@ -1,143 +1,239 @@
 /**
- * Lampa plugin: Remove movie duration from the info line
+ * Lampa plugin: Hide Duration (movies) & Seasons/Episodes (series)
+ * Version: 1.2.0 (ASCII-safe, stable)
+ * Author: Roman + ChatGPT
  *
- * This plugin removes unneeded metadata from the information line that
- * appears above the list of genres on a movie or series detail page.
- * For films, it strips the runtime (formatted like "02:14") that
- * appears on the left of the genre list.  For TV series, it removes
- * the blocks that show the number of seasons and episodes (e.g.
- * "РЎРµР·РѕРЅС‹: 1 В· РЎРµСЂРёРё: 8").  In the stock interface these items are
- * separated from the rest of the details by dots or bullets.  We do
- * not reposition or reformat themвЂ”our goal is to remove the elements
- * entirely, along with their adjacent separators.  This keeps the
- * remaining details intact while omitting the length of the film or
- * the season/episode counts for serials.
+ * Что делает:
+ *  - Фильмы: удаляет токен длительности HH:MM (напр., 02:14) и соседний разделитель.
+ *  - Сериалы: удаляет блоки "Сезоны: N" / "Серии: M" (и варианты RU/EN),
+ *             как в одном спане, так и разнесённые по нескольким спанам,
+ *             плюс все прилегающие разделители.
  *
- * The implementation relies on Lampa's event system.  When the
- * 'full' view finishes loading (the `complite` event) we scan the
- * details container for spans whose text matches a time in HH:MM
- * format and remove them.  We also remove the preceding or following
- * separator element (`full-start__split`/`full-start-new__split` or a
- * span containing a dot/bullet) to avoid leaving a stray dot at the
- * beginning of the genre list.  The plugin is selfвЂ‘contained and
- * activates itself automatically once Lampa has loaded.
+ * Совместимость:
+ *  - Старые/новые селекторы: full-start*, full-start-new*.
+ *  - Реагирует на 'full' (build/open/complite) и следит за дальнейшими
+ *    перерисовками через MutationObserver (без дубликатов наблюдателей).
+ *
+ * Технически:
+ *  - Только ES5-конструкции (var/function), ASCII-safe (\uXXXX в регэкспах),
+ *    без NodeList.forEach/Set/WeakSet.
  */
 
 (function () {
-    'use strict';
+  'use strict';
 
-    /**
-     * Remove runtime spans and their adjacent separators from the
-     * details section.  This function will search both the legacy
-     * (fullвЂ‘start__details) and the new (fullвЂ‘startвЂ‘new__details)
-     * containers and perform the removal.
-     */
-    function removeDurationFromDetails() {
-        // Collect all potential detail containers
-        var $containers = $('.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info');
-        $containers.each(function () {
-            var $container = $(this);
-            // Iterate over all span elements within the container
-            $container.find('span').each(function () {
-                var $span = $(this);
-                var text = $span.text().trim();
-                // Determine whether this span represents a runtime (HH:MM)
-                // or season/episode information.  We treat any occurrence of
-                // В«РЎРµР·РѕРЅВ», В«РЎРµР·РѕРЅС‹В», В«РЎРµСЂРёСЏВ», В«РЎРµСЂРёРёВ» or their plural forms as
-                // indicating season/episode metadata.  This is more robust
-                // than matching exact numeric formats and helps catch
-                // variants like "1 СЃРµР·РѕРЅ 8 СЃРµСЂРёР№" or "РЎРµР·РѕРЅС‹: 3".
-                var isTime = /^\d{1,2}:\d{2}$/.test(text);
-                // Match keywords for seasons and episodes regardless of
-                // order or punctuation.  The "i" flag makes the match
-                // caseвЂ‘insensitive.
-                var containsSeasonKeyword = /РЎРµР·РѕРЅ(?:С‹)?/i.test(text);
-                var containsEpisodeKeyword = /РЎРµСЂ(?:РёСЏ|РёРё|РёР№)/i.test(text);
-                var isSeason = containsSeasonKeyword;
-                var isEpisode = containsEpisodeKeyword;
-                if (isTime || isSeason || isEpisode) {
-                    var $prev = $span.prev();
-                    var $next = $span.next();
-                    var isSeparator = function ($el) {
-                        if (!$el || !$el.length) return false;
-                        var cls = $el.attr('class') || '';
-                        var txt = ($el.text() || '').trim();
-                        return /full-start.*__split/.test(cls) || /^[\.В·вЂў|]$/.test(txt);
-                    };
-                    // Remove an adjacent separator to avoid stray dots
-                    if (isSeparator($prev)) {
-                        $prev.remove();
-                    } else if (isSeparator($next)) {
-                        $next.remove();
-                    }
-                    $span.remove();
-                }
-            });
-        });
+  var SELECTORS = '.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info';
+
+  // ----------------- helpers -----------------
+
+  function textOf(node) {
+    return (node && (node.textContent || node.innerText) || '').trim();
+  }
+
+  function isTimeToken(s) {
+    return /^\d{1,2}:\d{2}$/.test((s || '').trim());
+  }
+
+  // Разделитель: фирменные split-элементы или одиночные символы . • · |
+  function isSeparatorNode(el) {
+    if (!el) return false;
+    var cls = (el.className || '') + '';
+    var txt = textOf(el);
+    return /full-start.*__split/.test(cls) || /^[.\u2022\u00B7|]$/.test(txt);
+  }
+
+  function removeNode(node) {
+    if (node && node.parentNode) node.parentNode.removeChild(node);
+  }
+
+  function cleanupLeadingSeparators(container) {
+    if (!container) return;
+    var first = container.firstElementChild;
+    while (first && isSeparatorNode(first)) {
+      removeNode(first);
+      first = container.firstElementChild;
     }
+  }
 
-    /**
-     * Attach a MutationObserver to the provided element to ensure that
-     * newly added spans matching the runtime format are removed.  This
-     * observer reвЂ‘applies the removal logic whenever the children of
-     * the details container change (e.g. when Lampa updates the info
-     * panel asynchronously).
-     *
-     * @param {HTMLElement} element The container to observe
-     */
-    function observeDetails(element) {
-        if (!element || !element.nodeType) return;
-        var observer = new MutationObserver(function (mutations) {
-            mutations.forEach(function () {
-                removeDurationFromDetails();
-            });
-        });
-        observer.observe(element, { childList: true, subtree: true });
-    }
+  function isPureNumber(txt) {
+    return /^\d+$/.test((txt || '').trim());
+  }
 
-    /**
-     * Handler for the 'full' view completion event.  When a movie or
-     * series detail page finishes loading, we invoke the removal and
-     * attach observers to its details containers so that dynamic
-     * updates cannot restore the removed runtime.
-     *
-     * @param {Object} data Event data from Lampa.Listener.follow
-     */
-    function handleFullEvent(data) {
-        if (!data || data.type !== 'complite') return;
-        // Slight delay to allow the DOM to finish rendering
-        setTimeout(function () {
-            removeDurationFromDetails();
-            // Attach observers to each details container
-            var containers = document.querySelectorAll('.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info');
-            containers.forEach(function (el) {
-                observeDetails(el);
-            });
-        }, 100);
-    }
+  // ----------------- series detection (ASCII-safe) -----------------
 
-    /**
-     * Initialise the plugin once Lampa is available.  We poll for
-     * Lampa.Listener to appear on the global object and then register
-     * our event handler.  This avoids race conditions where the
-     * plugin is loaded before Lampa itself.
-     */
-    function waitForLampa() {
-        if (typeof window !== 'undefined' && typeof window.Lampa !== 'undefined' && window.Lampa.Listener && typeof window.Lampa.Listener.follow === 'function') {
-            // Register the handler for 'full' events
-            window.Lampa.Listener.follow('full', handleFullEvent);
-            // Also perform an initial removal in case the plugin loads
-            // after the first detail page has already rendered
-            setTimeout(function () {
-                removeDurationFromDetails();
-            }, 200);
+  // RU "сезон(ы|ов)?"  -> \u0441\u0435\u0437\u043e\u043d(ы|ов)
+  var RU_SEASON = '(?:\\u0441\\u0435\\u0437\\u043e\\u043d(?:\\u044b|\\u043e\\u0432)?)';
+  // RU "серия|серии|серий"
+  var RU_EPISODE = '(?:\\u0441\\u0435\\u0440\\u0438\\u044f|\\u0441\\u0435\\u0440\\u0438\\u0438|\\u0441\\u0435\\u0440\\u0438\\u0439)';
+
+  // Метка без числа ("Сезоны:" / "Серии:" / "Seasons:" / "Episodes:")
+  var RE_LABEL = new RegExp('^(?:' + RU_SEASON + '|' + RU_EPISODE + '|seasons?|episodes?)\\s*:?$', 'i');
+
+  // Inline "метка + число": "Сезоны: 3", "Seasons 3", "Серии 8"
+  var RE_INLINE_SEASON = new RegExp('^(?:' + RU_SEASON + '|seasons?)\\s*:?\\s*\\d+$', 'i');
+  var RE_INLINE_EPISODE = new RegExp('^(?:' + RU_EPISODE + '|episodes?)\\s*:?\\s*\\d+$', 'i');
+
+  // Inline "число + метка": "3 сезона", "8 серий", "8 episodes", "3 seasons"
+  var RE_INLINE_NUM_FIRST_SEASON = new RegExp('^\\d+\\s*(?:' + RU_SEASON + '|seasons?)$', 'i');
+  var RE_INLINE_NUM_FIRST_EPISODE = new RegExp('^\\d+\\s*(?:' + RU_EPISODE + '|episodes?)$', 'i');
+
+  function isSeriesLabelToken(txt) {
+    if (!txt) return false;
+    return RE_LABEL.test(txt);
+  }
+
+  function isSeriesInlineToken(txt) {
+    if (!txt) return false;
+    return RE_INLINE_SEASON.test(txt) ||
+           RE_INLINE_EPISODE.test(txt) ||
+           RE_INLINE_NUM_FIRST_SEASON.test(txt) ||
+           RE_INLINE_NUM_FIRST_EPISODE.test(txt);
+  }
+
+  // ----------------- core per-container -----------------
+
+  function stripTokensIn(container) {
+    if (!container) return;
+
+    var spans = container.querySelectorAll('span');
+    var toRemove = []; // массив, потом дедуп
+    var i, span, txt;
+
+    for (i = 0; i < spans.length; i++) {
+      span = spans[i];
+      if (!span) continue;
+
+      txt = textOf(span);
+
+      // 1) Фильмы: HH:MM
+      if (isTimeToken(txt)) {
+        var p1 = span.previousElementSibling;
+        var n1 = span.nextElementSibling;
+        if (isSeparatorNode(p1)) toRemove.push(p1);
+        else if (isSeparatorNode(n1)) toRemove.push(n1);
+        toRemove.push(span);
+        continue;
+      }
+
+      // 2) Сериалы: inline токены (метка+число или число+метка)
+      if (isSeriesInlineToken(txt)) {
+        var p2 = span.previousElementSibling;
+        var n2 = span.nextElementSibling;
+        if (isSeparatorNode(p2)) toRemove.push(p2);
+        else if (isSeparatorNode(n2)) toRemove.push(n2);
+        toRemove.push(span);
+        continue;
+      }
+
+      // 3) Сериалы: раздельные спаны "Сезоны" [split?] "3"
+      if (isSeriesLabelToken(txt)) {
+        // слева мог быть разделитель
+        var leftSep = span.previousElementSibling;
+        if (isSeparatorNode(leftSep)) toRemove.push(leftSep);
+
+        // между меткой и числом может стоять split — убираем и двигаемся к числу
+        var n = span.nextElementSibling;
+        if (isSeparatorNode(n)) { toRemove.push(n); n = span.nextElementSibling; }
+
+        if (n && isPureNumber(textOf(n))) {
+          // после числа может быть разделитель — тоже убираем
+          var afterNum = n.nextElementSibling;
+          if (isSeparatorNode(afterNum)) toRemove.push(afterNum);
+          toRemove.push(n);
         } else {
-            // Try again shortly
-            setTimeout(waitForLampa, 200);
+          // если числа нет, то уберём ближайший правый split, чтобы не оставлять точку
+          var rsep = span.nextElementSibling;
+          if (isSeparatorNode(rsep)) toRemove.push(rsep);
         }
+
+        toRemove.push(span);
+      }
     }
 
-    // Begin waiting for Lampa to be ready.  This call is executed
-    // immediately when the plugin script is evaluated.
-    waitForLampa();
+    // удаляем без дублей
+    var uniq = [];
+    for (i = 0; i < toRemove.length; i++) {
+      if (uniq.indexOf(toRemove[i]) === -1) uniq.push(toRemove[i]);
+    }
+    for (i = 0; i < uniq.length; i++) removeNode(uniq[i]);
+
+    // финальная подчистка: если контейнер теперь начинается с разделителя
+    cleanupLeadingSeparators(container);
+  }
+
+  function scan(root) {
+    var scope = root || document;
+    var nodes = scope.querySelectorAll(SELECTORS);
+    var i;
+    for (i = 0; i < nodes.length; i++) stripTokensIn(nodes[i]);
+  }
+
+  // ----------------- observers (без дублей) -----------------
+
+  function observeDetails(element) {
+    if (!element || element.getAttribute('data-hds-observed') === '1') return;
+
+    var pending = false;
+    var obs = new MutationObserver(function () {
+      if (pending) return;
+      pending = true;
+      // подождём тик, чтобы собрать пачку изменений
+      setTimeout(function () {
+        pending = false;
+        stripTokensIn(element);
+      }, 0);
+    });
+
+    obs.observe(element, { childList: true, subtree: true });
+    element.setAttribute('data-hds-observed', '1');
+  }
+
+  function attachObserversIn(root) {
+    var nodes = (root || document).querySelectorAll(SELECTORS);
+    var i;
+    for (i = 0; i < nodes.length; i++) observeDetails(nodes[i]);
+  }
+
+  // ----------------- Lampa events & boot -----------------
+
+  function handleFullEvent(e) {
+    if (!e || !e.type) return;
+    if (e.type === 'build' || e.type === 'open' || e.type === 'complite')) {
+      // даём DOM «устаканиться»
+      setTimeout(function () {
+        scan(document);
+        attachObserversIn(document);
+      }, 50);
+    }
+  }
+
+  function subscribeOnce() {
+    if (typeof window === 'undefined' || typeof window.Lampa === 'undefined' || !window.Lampa.Listener) return false;
+    window.Lampa.Listener.follow('full', handleFullEvent);
+
+    // первичный проход (если уже открыта карточка)
+    setTimeout(function () {
+      scan(document);
+      attachObserversIn(document);
+    }, 200);
+
+    return true;
+  }
+
+  (function waitForLampa(tries) {
+    tries = tries || 0;
+    if (subscribeOnce()) return;
+    if (tries < 200) {
+      setTimeout(function () { waitForLampa(tries + 1); }, 200); // до ~40 сек
+    } else {
+      // запасной одноразовый проход
+      setTimeout(function () {
+        scan(document);
+        attachObserversIn(document);
+      }, 200);
+    }
+  })();
+
 })();
+
+
