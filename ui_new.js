@@ -188,4 +188,3 @@
         // Ignore registration errors
     }
 })();
-
