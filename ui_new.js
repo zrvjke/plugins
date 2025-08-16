@@ -1,19 +1,14 @@
 /**
  * Lampa plugin: Hide Duration (movies) & Seasons/Episodes & Next-air (series)
- * Version: 1.3.0 (ASCII-safe, stable)
+ * Version: 1.3.1 (ASCII-safe, stabilized)
  * Author: Roman + ChatGPT
  *
- * Что делает:
- *  - ФИЛЬМЫ: удаляет длительность HH:MM и соседний разделитель.
- *  - СЕРИАЛЫ:
- *      • удаляет "Сезоны/Серии" (RU/EN) — inline и разнесённые по спанам, с разделителями;
- *      • удаляет блок "Следующая <дата> / Осталось дней: N" (RU/EN), включая левый разделитель.
+ * Фильмы: скрывает HH:MM и соседний разделитель.
+ * Сериалы: скрывает "Сезоны/Серии" (RU/EN) и блок "Следующая <дата> / Осталось дней: N"
+ *          вместе с левым разделителем. Работает и если весь блок в одном <span>.
  *
- * Совместимость:
- *  - Селекторы full-start* и full-start-new*.
- *  - Реагирует на события 'full' (build/open/complite) и подчищает любые
- *    последующие перерисовки через MutationObserver (без дублей наблюдателей).
- *  - ES5, ASCII-safe (\uXXXX), без NodeList.forEach/Set/WeakSet.
+ * Совместимость: full-start*, full-start-new*, события 'full' (build/open/complite),
+ * MutationObserver без дублей, ES5, ASCII-safe (\uXXXX).
  */
 
 (function () {
@@ -63,65 +58,58 @@
   // RU "серия|серии|серий"
   var RU_EPISODE = '(?:\\u0441\\u0435\\u0440\\u0438\\u044f|\\u0441\\u0435\\u0440\\u0438\\u0438|\\u0441\\u0435\\u0440\\u0438\\u0439)';
 
-  // Метка без числа: "Сезоны:" / "Серии:" / "Seasons:" / "Episodes:"
+  // Метка без числа
   var RE_LABEL = new RegExp('^(?:' + RU_SEASON + '|' + RU_EPISODE + '|seasons?|episodes?)\\s*:?$', 'i');
 
-  // Inline "метка + число": "Сезоны: 3", "Seasons 3", "Серии 8"
+  // Inline "метка + число" и "число + метка"
   var RE_INLINE_SEASON = new RegExp('^(?:' + RU_SEASON + '|seasons?)\\s*:?\\s*\\d+$', 'i');
   var RE_INLINE_EPISODE = new RegExp('^(?:' + RU_EPISODE + '|episodes?)\\s*:?\\s*\\d+$', 'i');
-
-  // Inline "число + метка": "3 сезона", "8 серий", "3 seasons", "8 episodes"
   var RE_INLINE_NUM_FIRST_SEASON = new RegExp('^\\d+\\s*(?:' + RU_SEASON + '|seasons?)$', 'i');
   var RE_INLINE_NUM_FIRST_EPISODE = new RegExp('^\\d+\\s*(?:' + RU_EPISODE + '|episodes?)$', 'i');
 
   function isSeriesLabelToken(txt) {
-    if (!txt) return false;
-    return RE_LABEL.test(txt);
+    return !!txt && RE_LABEL.test(txt);
   }
-
   function isSeriesInlineToken(txt) {
-    if (!txt) return false;
-    return RE_INLINE_SEASON.test(txt) ||
-           RE_INLINE_EPISODE.test(txt) ||
-           RE_INLINE_NUM_FIRST_SEASON.test(txt) ||
-           RE_INLINE_NUM_FIRST_EPISODE.test(txt);
+    return !!txt && (
+      RE_INLINE_SEASON.test(txt) ||
+      RE_INLINE_EPISODE.test(txt) ||
+      RE_INLINE_NUM_FIRST_SEASON.test(txt) ||
+      RE_INLINE_NUM_FIRST_EPISODE.test(txt)
+    );
   }
 
   // ----------------- "Next air" detection (ASCII-safe) -----------------
 
-  // RU months (genitive): января ... декабря
+  // RU months (genitive)
   var RU_MONTH = '(?:\\u044f\\u043d\\u0432\\u0430\\u0440\\u044f|\\u0444\\u0435\\u0432\\u0440\\u0430\\u043b\\u044f|\\u043c\\u0430\\u0440\\u0442\\u0430|\\u0430\\u043f\\u0440\\u0435\\u043b\\u044f|\\u043c\\u0430\\u044f|\\u0438\\u044e\\u043d\\u044f|\\u0438\\u044e\\u043b\\u044f|\\u0430\\u0432\\u0433\\u0443\\u0441\\u0442\\u0430|\\u0441\\u0435\\u043d\\u0442\\u044f\\u0431\\u0440\\u044f|\\u043e\\u043a\\u0442\\u044f\\u0431\\u0440\\u044f|\\u043d\\u043e\\u044f\\u0431\\u0440\\u044f|\\u0434\\u0435\\u043a\\u0430\\u0431\\u0440\\u044f)';
-  // EN months (short/full)
+  // EN months
   var EN_MONTH = '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
 
   function isDatePiece(txt) {
     if (!txt) return false;
     var t = (txt || '').trim().toLowerCase();
-    return /^\d{1,2}$/.test(t) ||                 // day number
-           new RegExp('^' + RU_MONTH + '$', 'i').test(t) ||
-           new RegExp('^' + EN_MONTH + '$', 'i').test(t) ||
-           /^\d{4}$/.test(t);                      // year
+    return /^\d{1,2}$/.test(t) || new RegExp('^' + RU_MONTH + '$', 'i').test(t) ||
+           new RegExp('^' + EN_MONTH + '$', 'i').test(t) || /^\d{4}$/.test(t);
   }
 
-  // "Следующая ..." / "Next ..."
-  var RE_NEXT_LABEL = new RegExp('^(?:\\u0421\\u043b\\u0435\\u0434\\u0443\\u044e\\u0449[\\u0430\\u0438\\u0435]?|next)\\b\\s*:?', 'i');
+  // "Следующая/Следующий/Следующее/Следующие [серия/эпизод]?" / "Next [episode]?"
+  var RE_NEXT_LABEL = new RegExp(
+    '^(?:' +
+      '\\u0421\\u043b\\u0435\\u0434\\u0443\\u044e\\u0449' +
+        '(?:\\u0430\\u044f|\\u0438\\u0439|\\u0435\\u0435|\\u0438\\u0435)?' +
+        '(?:\\s+(?:\\u0441\\u0435\\u0440\\u0438\\u044f|\\u044d\\u043f\\u0438\\u0437\\u043e\\u0434))?' +
+      '|next(?:\\s+(?:episode|ep))?' +
+    ')\\s*:?', 'i'
+  );
 
-  // "Осталось дней: N" / "Days left: N"
+  // "Осталось дней" / "Days left" (отдельная метка или inline с числом)
   var RE_REMAIN_LABEL = new RegExp('^(?:\\u041e\\u0441\\u0442\\u0430\\u043b\\u043e\\u0441\\u044c\\s+\\u0434\\u043d\\u0435\\u0439|days\\s+left)\\s*:?$', 'i');
   var RE_REMAIN_INLINE = new RegExp('^(?:\\u041e\\u0441\\u0442\\u0430\\u043b\\u043e\\u0441\\u044c\\s+\\u0434\\u043d\\u0435\\u0439|days\\s+left)\\s*:?\\s*\\d+\\s*$', 'i');
 
-  function isNextLabelToken(txt) {
-    if (!txt) return false;
-    return RE_NEXT_LABEL.test(txt);
-  }
-  function isRemainLabelToken(txt) {
-    if (!txt) return false;
-    return RE_REMAIN_LABEL.test(txt);
-  }
-  function isRemainInlineToken(txt) {
-    if (!txt) return false;
-    return RE_REMAIN_INLINE.test(txt);
-  }
+  function isNextLabelToken(txt)   { return !!txt && RE_NEXT_LABEL.test(txt); }
+  function isRemainLabelToken(txt) { return !!txt && RE_REMAIN_LABEL.test(txt); }
+  function isRemainInlineToken(txt){ return !!txt && RE_REMAIN_INLINE.test(txt); }
 
   // ----------------- core per-container -----------------
 
@@ -129,7 +117,7 @@
     if (!container) return;
 
     var spans = container.querySelectorAll('span');
-    var toRemove = []; // массив, потом дедуп
+    var toRemove = [];
     var i, span, txt;
 
     for (i = 0; i < spans.length; i++) {
@@ -148,7 +136,7 @@
         continue;
       }
 
-      // 2) СЕРИАЛЫ: inline токены (метка+число или число+метка)
+      // 2) СЕРИАЛЫ: inline "Сезоны/Серии"
       if (isSeriesInlineToken(txt)) {
         var p2 = span.previousElementSibling;
         var n2 = span.nextElementSibling;
@@ -158,7 +146,7 @@
         continue;
       }
 
-      // 3) СЕРИАЛЫ: раздельные спаны "Сезоны" [split?] "3"
+      // 3) СЕРИАЛЫ: раздельные "Сезоны"/"Серии" + число
       if (isSeriesLabelToken(txt)) {
         var leftSep = span.previousElementSibling;
         if (isSeparatorNode(leftSep)) toRemove.push(leftSep);
@@ -179,20 +167,22 @@
         continue;
       }
 
-      // 4) СЕРИАЛЫ: "Следующая <дата> ..."  (RU/EN)
-      if (isNextLabelToken(txt)) {
+      // 4) СЕРИАЛЫ: "Следующая … / Осталось дней: N"
+      // Может быть полностью в одном <span>, тогда просто убираем его целиком.
+      if (isNextLabelToken(txt) || isRemainInlineToken(txt) ||
+          (txt && /\\u041e\\u0441\\u0442\\u0430\\u043b\\u043e\\u0441\\u044c\\s+\\u0434\\u043d\\u0435\\u0439/i.test(txt))) {
         var pN = span.previousElementSibling;
         if (isSeparatorNode(pN)) toRemove.push(pN); // левую точку перед блоком
-
-        // Удаляем сам лейбл
         toRemove.push(span);
 
-        // Удаляем последовательные кусочки даты и разделители (/, split)
+        // Если блок разбит на несколько спанов — подчистим всё справа:
         var cur = span.nextElementSibling;
         var guard = 0;
-        while (cur && guard++ < 10) { // ограничим, чтобы не съесть лишнее
+        while (cur && guard++ < 20) {
           var tcur = textOf(cur);
-          if (isSeparatorNode(cur) || isDatePiece(tcur)) {
+          if (isSeparatorNode(cur) || isDatePiece(tcur) ||
+              isRemainInlineToken(tcur) || isRemainLabelToken(tcur) ||
+              isPureNumber(tcur)) {
             toRemove.push(cur);
             cur = cur.nextElementSibling;
             continue;
@@ -202,33 +192,19 @@
         continue;
       }
 
-      // 5) СЕРИАЛЫ: "Осталось дней: N"
-      if (isRemainInlineToken(txt)) {
+      // 5) СЕРИАЛЫ: если «Осталось дней: N» встречается отдельно
+      if (isRemainInlineToken(txt) || isRemainLabelToken(txt)) {
         var pR1 = span.previousElementSibling;
         var nR1 = span.nextElementSibling;
         if (isSeparatorNode(pR1)) toRemove.push(pR1);
-        else if (isSeparatorNode(nR1)) toRemove.push(nR1);
-        toRemove.push(span);
-        continue;
-      }
-      if (isRemainLabelToken(txt)) {
-        var pR = span.previousElementSibling;
-        if (isSeparatorNode(pR)) toRemove.push(pR);
+        if (isSeparatorNode(nR1)) toRemove.push(nR1);
 
-        // возможен split после метки
-        var nr = span.nextElementSibling;
-        if (isSeparatorNode(nr)) { toRemove.push(nr); nr = span.nextElementSibling; }
-
-        // число дней
-        if (nr && isPureNumber(textOf(nr))) {
-          var afterNr = nr.nextElementSibling;
+        // если это только метка, удалим и число после неё
+        if (isRemainLabelToken(txt) && nR1 && isPureNumber(textOf(nR1))) {
+          var afterNr = nR1.nextElementSibling;
           if (isSeparatorNode(afterNr)) toRemove.push(afterNr);
-          toRemove.push(nr);
-        } else {
-          var rsep2 = span.nextElementSibling;
-          if (isSeparatorNode(rsep2)) toRemove.push(rsep2);
+          toRemove.push(nR1);
         }
-
         toRemove.push(span);
         continue;
       }
@@ -236,12 +212,9 @@
 
     // удаляем без дублей
     var uniq = [];
-    for (i = 0; i < toRemove.length; i++) {
-      if (uniq.indexOf(toRemove[i]) === -1) uniq.push(toRemove[i]);
-    }
+    for (i = 0; i < toRemove.length; i++) if (uniq.indexOf(toRemove[i]) === -1) uniq.push(toRemove[i]);
     for (i = 0; i < uniq.length; i++) removeNode(uniq[i]);
 
-    // финальная подчистка: если контейнер теперь начинается с разделителя
     cleanupLeadingSeparators(container);
   }
 
@@ -261,7 +234,6 @@
     var obs = new MutationObserver(function () {
       if (pending) return;
       pending = true;
-      // подождём тик, чтобы собрать пачку изменений
       setTimeout(function () {
         pending = false;
         stripTokensIn(element);
@@ -283,7 +255,6 @@
   function handleFullEvent(e) {
     if (!e || !e.type) return;
     if (e.type === 'build' || e.type === 'open' || e.type === 'complite') {
-      // даём DOM «устаканиться»
       setTimeout(function () {
         scan(document);
         attachObserversIn(document);
@@ -295,7 +266,6 @@
     if (typeof window === 'undefined' || typeof window.Lampa === 'undefined' || !window.Lampa.Listener) return false;
     window.Lampa.Listener.follow('full', handleFullEvent);
 
-    // первичный проход (если уже открыта карточка)
     setTimeout(function () {
       scan(document);
       attachObserversIn(document);
@@ -308,9 +278,8 @@
     tries = tries || 0;
     if (subscribeOnce()) return;
     if (tries < 200) {
-      setTimeout(function () { waitForLampa(tries + 1); }, 200); // до ~40 сек
+      setTimeout(function () { waitForLampa(tries + 1); }, 200);
     } else {
-      // запасной одноразовый проход
       setTimeout(function () {
         scan(document);
         attachObserversIn(document);
