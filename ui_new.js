@@ -1,16 +1,17 @@
 /**
  * Lampa plugin: Remove movie duration from the info line
  *
- * This plugin strips the runtime (formatted like 02:14) from the
- * information line that appears above the list of genres on a movie's
- * detail page.  In the stock interface the runtime is shown on the
- * left of the genre list and separated from the following values by a
- * dot or bullet.  The modified version of the вЂњInterface MODвЂќ plugin
- * by bywolf88 moves the runtime to the end of the line and reвЂ‘formats
- * it.  Our goal is different: we do not reposition or reformat the
- * runtime at allвЂ”we simply remove the runtime element entirely,
- * along with its adjacent separator.  This keeps the rest of the
- * details intact while omitting the length of the film.
+ * This plugin removes unneeded metadata from the information line that
+ * appears above the list of genres on a movie or series detail page.
+ * For films, it strips the runtime (formatted like "02:14") that
+ * appears on the left of the genre list.  For TV series, it removes
+ * the blocks that show the number of seasons and episodes (e.g.
+ * "РЎРµР·РѕРЅС‹: 1 В· РЎРµСЂРёРё: 8").  In the stock interface these items are
+ * separated from the rest of the details by dots or bullets.  We do
+ * not reposition or reformat themвЂ”our goal is to remove the elements
+ * entirely, along with their adjacent separators.  This keeps the
+ * remaining details intact while omitting the length of the film or
+ * the season/episode counts for serials.
  *
  * The implementation relies on Lampa's event system.  When the
  * 'full' view finishes loading (the `complite` event) we scan the
@@ -41,10 +42,19 @@
                 var $span = $(this);
                 var text = $span.text().trim();
                 // Determine whether this span represents a runtime (HH:MM)
-                // or season/episode information (e.g. "РЎРµР·РѕРЅС‹: 1", "1 РЎРµР·РѕРЅ", "РЎРµСЂРёРё: 8").
+                // or season/episode information.  We treat any occurrence of
+                // В«РЎРµР·РѕРЅВ», В«РЎРµР·РѕРЅС‹В», В«РЎРµСЂРёСЏВ», В«РЎРµСЂРёРёВ» or their plural forms as
+                // indicating season/episode metadata.  This is more robust
+                // than matching exact numeric formats and helps catch
+                // variants like "1 СЃРµР·РѕРЅ 8 СЃРµСЂРёР№" or "РЎРµР·РѕРЅС‹: 3".
                 var isTime = /^\d{1,2}:\d{2}$/.test(text);
-                var isSeason = /РЎРµР·РѕРЅ(?:С‹)?:?\s*\d+/i.test(text) || /\d+\s+РЎРµР·РѕРЅ(?:Р°|РѕРІ)?/i.test(text);
-                var isEpisode = /РЎРµСЂРёРё?:?\s*\d+/i.test(text) || /\d+\s+РЎРµСЂРё(?:СЏ|Рё|Р№)/i.test(text);
+                // Match keywords for seasons and episodes regardless of
+                // order or punctuation.  The "i" flag makes the match
+                // caseвЂ‘insensitive.
+                var containsSeasonKeyword = /РЎРµР·РѕРЅ(?:С‹)?/i.test(text);
+                var containsEpisodeKeyword = /РЎРµСЂ(?:РёСЏ|РёРё|РёР№)/i.test(text);
+                var isSeason = containsSeasonKeyword;
+                var isEpisode = containsEpisodeKeyword;
                 if (isTime || isSeason || isEpisode) {
                     var $prev = $span.prev();
                     var $next = $span.next();
@@ -131,5 +141,3 @@
     // immediately when the plugin script is evaluated.
     waitForLampa();
 })();
-
-
