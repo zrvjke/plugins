@@ -1,225 +1,201 @@
 /**
- * Lampa plugin — KP-as-main rating over TMDB (v1.0)
- * Оставляет источник TMDB, но заменяет основной рейтинг на рейтинг Кинопоиска.
- * Делает это на уровне данных (в ответе TMDB), а затем обновляет чип в UI.
- *
- * Как работает:
- * - перехватываю Lampa.TMDB.api для запросов 'movie/{id}' и 'tv/{id}'
- * - вытягиваю imdb_id через TMDB /external_ids
- * - по imdb_id беру rating.kp из api.kinopoisk.dev (второй вариант — поиск по названию+году)
- * - подкладываю kp в поле vote_average перед отдачей TMDB-ответа в Лампу
- * - после отрисовки карточки скрываю чип TMDB и вставляю чип «КР {оценка}»
+ * Lampa plugin: Watched Flag from Kinopoisk export (v2.2)
+ * — Перед жанрами показывает [+ Просмотрено] / [– Не просмотрено]
+ * — Источник: твой список kpIds из КП (через URL ИЛИ inline ниже)
+ * — Клик по флажку — локальный оверрайд (localStorage)
  */
 
-(function () {
+(function(){
   'use strict';
 
-  /* === твой ключ api.kinopoisk.dev (v1.4) === */
-  var DEV_API_KEY = 'KS9Z0SJ-5WCMSN8-MA3VHZK-V1ZFH4G';
+  /* ====== НАСТРОЙКА ====== */
+  // ТВОЯ RAW-ССЫЛКА (GitHub raw):
+  var REMOTE_JSON_URL = 'https://raw.githubusercontent.com/zrvjke/plugins/refs/heads/main/kp-watched.json';
 
-  /* === опции === */
-  var DEBUG = false;      // true — покажу шаги в Noty
-  var HIDE_TMDB = true;   // спрятать все TMDB-чипы в полоске рейтингов
+  // Альтернатива: вставь массив kpIds прямо сюда и оставь REMOTE_JSON_URL пустым
+  var KP_IDS_INLINE = []; // пример: [301, 535341, 123456]
 
-  // --- утилиты ---
+  var REMOTE_TTL_MS = 12 * 60 * 60 * 1000; // 12 ч
+  var DEBUG = false;
+
+  /* ====== ВСПОМОГАТЕЛЬНОЕ ====== */
   function noty(s){ try{ if(DEBUG && window.Lampa && Lampa.Noty) Lampa.Noty.show(String(s)); }catch(e){} }
   function $(sel,root){ return (root||document).querySelector(sel); }
-  function $$(sel,root){ return Array.prototype.slice.call((root||document).querySelectorAll(sel)); }
-  function txt(n){ return (n && (n.textContent||n.innerText)||'').replace(/\u00A0/g,' ').trim(); }
+  function textOf(n){ return (n && (n.textContent||n.innerText)||'').replace(/\u00A0/g,' ').trim(); }
+  function readLS(k,d){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch(e){ return d; } }
+  function writeLS(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
 
-  var rq = new (window.Lampa && Lampa.Reguest ? Lampa.Reguest : XMLHttpRequest)();
+  var LS_MAP   = 'hds.watched.map.v2';
+  var LS_REMOTE= 'hds.watched.remote';
 
-  function fetchJSON(url, headers, cb, eb){
-    if (rq.silent){ rq.timeout(12000); rq.silent(url, function(j){ cb(j); }, function(){ eb&&eb(); }, false, {headers:headers||{}} ); return; }
-    var x=new XMLHttpRequest(); x.open('GET',url,true);
-    for(var k in (headers||{})) try{x.setRequestHeader(k, headers[k]);}catch(e){}
-    x.onreadystatechange=function(){ if(x.readyState===4){ try{ cb(JSON.parse(x.responseText)); }catch(e){ eb&&eb(); } } };
-    x.onerror=function(){ eb&&eb(); }; x.send();
+  function ensureCss(){
+    if (document.getElementById('hds-watch-css')) return;
+    var st = document.createElement('style');
+    st.id = 'hds-watch-css';
+    st.textContent =
+      '.hds-watch-flag{display:inline-flex;align-items:center;gap:6px;padding:2px 6px;border-radius:8px;background:rgba(255,255,255,.08);font-weight:600;font-size:12px;user-select:none;cursor:pointer;margin-right:6px}' +
+      '.hds-watch-flag[data-state="watched"]{color:#4ee38a}' +
+      '.hds-watch-flag[data-state="unwatched"]{color:#ff7a7a}' +
+      '.hds-watch-split{display:inline-block;margin:0 6px;opacity:.6}';
+    document.head.appendChild(st);
   }
 
-  // --- кеши, чтобы не дёргать API лишний раз ---
-  var kpByImdb = Object.create(null);     // imdb -> kp
-  var kpByTmdb  = Object.create(null);    // (type:id) -> kp
+  /* ====== МЕТА КАРТОЧКИ ====== */
+  var DETAILS_SEL = '.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info';
+  function details(){ return $(DETAILS_SEL); }
 
-  function getActiveMeta(){
-    var o={type:'movie', tmdb_id:null, title:'', original:'', year:0};
+  function activeMeta(){
+    var o={ type:'movie', tmdb_id:null, kp_id:null, imdb_id:null, title:'', original:'', year:0 };
     try{
       var act=Lampa.Activity && Lampa.Activity.active && Lampa.Activity.active();
       if(act && act.activity){
         var c=act.activity.card||{};
-        o.type=c.type || (act.activity.params&&(act.activity.params.method||act.activity.params.content_type)) || 'movie';
+        o.type=c.type || (act.activity.params && (act.activity.params.method||act.activity.params.content_type)) || 'movie';
         o.tmdb_id=c.id || (act.activity.params && act.activity.params.id) || null;
-        o.title=c.name||c.title||''; o.original=c.original_name||c.original_title||'';
-        var d=c.release_date||c.first_air_date||''; var m=d&&d.match(/\b(19|20)\d{2}\b/); if(m) o.year=+m[0];
+        o.kp_id=c.kinopoisk_id || c.kp_id || null;
+        o.imdb_id=c.imdb_id || null;
+        o.title=c.name||c.title||'';
+        o.original=c.original_name||c.original_title||'';
+        var d=c.release_date||c.first_air_date||''; var m=d && d.match(/\b(19|20)\d{2}\b/); if(m) o.year=+m[0];
       }
     }catch(e){}
     if(!o.original) o.original=o.title;
     return o;
   }
-
-  // ---------- Kinopoisk.dev rating ----------
-  function devByImdb(imdb, cb, eb){
-    if (kpByImdb[imdb]!=null) return cb(kpByImdb[imdb]);
-    var url='https://api.kinopoisk.dev/v1.4/movie?externalId.imdb='
-              + encodeURIComponent(imdb)
-              + '&limit=1&selectFields=rating';
-    fetchJSON(url, {'X-API-KEY':DEV_API_KEY,'accept':'application/json'}, function(j){
-      var d=j&&j.docs&&j.docs[0];
-      var val = (d&&d.rating&&d.rating.kp!=null) ? +d.rating.kp : null;
-      kpByImdb[imdb]=val;
-      cb(val);
-    }, eb);
-  }
-  function devSearchRating(title, year, cb, eb){
-    var url='https://api.kinopoisk.dev/v1.4/movie/search?query='+encodeURIComponent(title)+'&limit=10&selectFields=rating&selectFields=year';
-    fetchJSON(url, {'X-API-KEY':DEV_API_KEY,'accept':'application/json'}, function(j){
-      var a=(j&&j.docs)||[]; if(!a.length) return cb(null);
-      var p=null;
-      if(year){
-        p=a.find(function(x){return x.year===year && x.rating && x.rating.kp!=null;}) ||
-           a.find(function(x){return Math.abs((x.year||0)-year)<=1 && x.rating && x.rating.kp!=null;});
-      }
-      p=p||a.find(function(x){return x.rating && x.rating.kp!=null;});
-      cb(p?+p.rating.kp:null);
-    }, eb);
+  function keys(meta){
+    var a=[];
+    if (meta.kp_id)   a.push('kp:'+meta.kp_id);
+    if (meta.imdb_id) a.push('imdb:'+meta.imdb_id);
+    if (meta.tmdb_id) a.push((meta.type==='tv'?'tmdbtv:':'tmdb:')+meta.tmdb_id);
+    if (meta.title && meta.year) a.push('t:'+meta.title.toLowerCase()+'|'+meta.year);
+    return a;
   }
 
-  // ---------- UI helpers ----------
-  function ensureCss(){
-    if($('#kp-rate-css')) return;
-    var st=document.createElement('style'); st.id='kp-rate-css'; st.textContent=
-      '.kp-rate-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:10px;background:rgba(255,255,255,.08);margin-right:6px}' +
-      '.kp-rate-num{font-weight:700;font-size:13px}' +
-      '.kp-rate-lbl{font-size:12px;opacity:.7}';
-    document.head.appendChild(st);
+  /* ====== ИСТОЧНИК ДАННЫХ (REMOTE/INLINE) ====== */
+  var remoteSet=null, remoteTS=0, fetching=false, waiters=[];
+
+  function inlineSet(){
+    if (!KP_IDS_INLINE || !KP_IDS_INLINE.length) return null;
+    var s = new Set();
+    for (var i=0;i<KP_IDS_INLINE.length;i++){
+      var n = +KP_IDS_INLINE[i]; if (n>0) s.add(n);
+    }
+    return s.size ? s : null;
   }
-  function badgesWrap(){
-    return $('.full-start__rate, .full-start-new__rate, .full-start__tags, .full-start-new__tags');
+
+  function withRemote(cb){
+    var s = inlineSet();
+    if (s){ cb(s); return; }
+
+    if (!REMOTE_JSON_URL){ cb(null); return; }
+
+    if (remoteSet && (Date.now()-remoteTS<REMOTE_TTL_MS)) { cb(remoteSet); return; }
+
+    var cached = readLS(LS_REMOTE, null);
+    if (cached && Date.now()-cached.ts < REMOTE_TTL_MS){
+      remoteSet = new Set(cached.kpIds||[]);
+      remoteTS  = cached.ts;
+      cb(remoteSet); return;
+    }
+
+    if (fetching){ waiters.push(cb); return; }
+    fetching=true;
+
+    var x=new XMLHttpRequest();
+    x.open('GET', REMOTE_JSON_URL, true);
+    x.onreadystatechange=function(){
+      if(x.readyState!==4) return;
+      fetching=false;
+      try{
+        var j=JSON.parse(x.responseText||'null');
+        var ids = Array.isArray(j)?j:(j&&j.kpIds)||[];
+        ids = (ids||[]).filter(function(n){ return typeof n==='number' && n>0; });
+        remoteSet = new Set(ids);
+        remoteTS  = Date.now();
+        writeLS(LS_REMOTE, {ts:remoteTS, kpIds:ids});
+        cb(remoteSet); while(waiters.length) waiters.shift()(remoteSet);
+      }catch(e){ cb(null); while(waiters.length) waiters.shift()(null); }
+    };
+    x.onerror=function(){ fetching=false; cb(null); while(waiters.length) waiters.shift()(null); };
+    x.send();
   }
-  function hideTmdbBadges(wrap){
-    if(!HIDE_TMDB || !wrap) return;
-    var nodes = wrap.querySelectorAll('*');
-    for (var i=0;i<nodes.length;i++){
-      var n = nodes[i], t = (txt(n)+' '+(n.className||'')+' '+(n.id||'')+' '+(n.getAttribute('alt')||'')+' '+(n.getAttribute('title')||'')+' '+(n.getAttribute('aria-label')||'')+' '+(n.getAttribute('src')||'')).toLowerCase();
-      if (/\btmdb\b/.test(t)){ var up=n; for(var j=0;j<3 && up; j++){ up.style.display='none'; up=up.parentElement; } }
+
+  /* ====== ЛОКАЛЬНЫЕ ОВЕРРАЙДЫ ====== */
+  function readLocal(){ return readLS(LS_MAP, {}); }
+  function writeLocal(m){ writeLS(LS_MAP, m||{}); }
+
+  /* ====== РЕНДЕР ====== */
+  function ensureSplitAfter(node){
+    var next=node && node.nextElementSibling, need=true;
+    if(next){
+      var t=textOf(next), cls=(next.className||'')+'';
+      if (/full-start.*__split/.test(cls) || /^[.\u2022\u00B7|\/]$/.test(t)) need=false;
+    }
+    if(need){
+      var s=document.createElement('span'); s.className='hds-watch-split'; s.textContent='·';
+      node.parentNode && node.parentNode.insertBefore(s, node.nextSibling);
     }
   }
-  function injectKpChip(kp){
-    if(kp==null) return;
+
+  function render(state){
     ensureCss();
-    var wrap=badgesWrap(); if(!wrap) return;
-    hideTmdbBadges(wrap);
-
-    var have=$('.kp-rate-chip',wrap);
-    if(have){ have.querySelector('.kp-rate-num').textContent=kp.toFixed(1); return; }
-
-    var chip=document.createElement('span'); chip.className='kp-rate-chip';
-    var num=document.createElement('span'); num.className='kp-rate-num'; num.textContent=kp.toFixed(1);
-    var lbl=document.createElement('span'); lbl.className='kp-rate-lbl'; lbl.textContent='КР';
-    chip.appendChild(num); chip.appendChild(lbl);
-    wrap.insertBefore(chip, wrap.firstChild);
-
-    try{
-      if(Lampa.Controller && Lampa.Controller.update) Lampa.Controller.update();
-      if(Lampa.Scroll && Lampa.Scroll.update) Lampa.Scroll.update();
-      void document.body.offsetHeight; window.dispatchEvent(new Event('resize'));
-    }catch(e){}
+    var cont=details(); if(!cont) return;
+    var flag=cont.querySelector('.hds-watch-flag');
+    if(!flag){
+      flag=document.createElement('span');
+      flag.className='hds-watch-flag';
+      cont.insertBefore(flag, cont.firstChild);
+    }
+    flag.setAttribute('data-state', state?'watched':'unwatched');
+    flag.textContent = state ? '+ Просмотрено' : '– Не просмотрено';
+    ensureSplitAfter(flag);
   }
 
-  // ---------- перехват TMDB.api ----------
-  function patchTmdb(){
-    if(!window.Lampa || !Lampa.TMDB || typeof Lampa.TMDB.api!=='function' || Lampa.__kp_rate_patched) return;
-    Lampa.__kp_rate_patched = true;
-
-    var orig = Lampa.TMDB.api;
-
-    Lampa.TMDB.api = function(url, params, onOk, onErr){
-      try{
-        var m = url && url.match(/^(movie|tv)\/(\d+)(?:$|[/?])/i);
-        if(!m) return orig(url, params, onOk, onErr);
-
-        var type = m[1].toLowerCase();
-        var id   = m[2];
-        var key  = type+':'+id;
-
-        var sent=false, dataResp=null, haveKp=null, timed=false;
-
-        function trySend(){
-          if(sent) return;
-          if(dataResp && (haveKp!=null || timed)){
-            if(haveKp!=null){
-              // подменяем основной рейтинг
-              if(typeof dataResp.vote_average!=='undefined') dataResp.vote_average = haveKp;
-              // сериалам иногда кладут в nested объект — оставим просто vote_average
-            }
-            sent=true; onOk(dataResp);
-            // обновим UI после дорисовки
-            setTimeout(function(){ injectKpChip(haveKp); }, 200);
-          }
-        }
-
-        // 1) начинаем тянуть саму карточку (TMDB details)
-        orig(url, params, function(resp){
-          dataResp = resp;
-          trySend();
-        }, function(e){ onErr && onErr(e); });
-
-        // 2) параллельно — вытянем KP рейтинг
-        if(kpByTmdb[key]!=null){
-          haveKp = kpByTmdb[key]; trySend();
-        } else {
-          // сперва возьмём imdb_id
-          orig(type+'/'+id+'/external_ids', {}, function(ids){
-            var imdb = ids && (ids.imdb_id || ids.imdbId);
-            if(imdb){
-              devByImdb(imdb, function(kp){
-                haveKp = kp; kpByTmdb[key]=kp;
-                trySend();
-              }, function(){ bySearchFallback(); });
-            } else bySearchFallback();
-          }, function(){ bySearchFallback(); });
-
-          function bySearchFallback(){
-            // если деталей ещё нет — попросим их для заголовка/года;
-            if(dataResp){
-              var t = dataResp.title || dataResp.name || '';
-              var y = (type==='movie') ? (dataResp.release_date||'') : (dataResp.first_air_date||'');
-              var m = y.match(/\b(19|20)\d{2}\b/); var year = m?+m[0]:0;
-              if(!t){ trySend(); return; }
-              devSearchRating(t, year, function(kp){
-                haveKp = kp; kpByTmdb[key]=kp; trySend();
-              }, function(){ trySend(); });
-            } else {
-              // дождёмся деталей (таймером всё равно не зависнем)
-            }
-          }
-        }
-
-        // 3) страхуемся таймаутом, чтобы не ждать вечно KP
-        setTimeout(function(){ timed=true; trySend(); }, 1500);
-      }catch(e){
-        // на всякий — если что-то пошло не так, работаем как обычный TMDB
-        return orig(url, params, onOk, onErr);
-      }
+  function enableToggle(meta, resolvedKey){
+    var cont=details(); if(!cont) return;
+    var flag=cont.querySelector('.hds-watch-flag'); if(!flag) return;
+    flag.onclick=function(e){
+      e.preventDefault(); e.stopPropagation();
+      var local=readLocal(), k=(resolvedKey||keys(meta)[0]); if(!k) return;
+      var next = !(local[k]===1);
+      local[k]= next ? 1 : 0;
+      writeLocal(local);
+      render(next);
+      noty(next?'Пометила как просмотрено':'Сняла отметку «просмотрено»');
     };
   }
 
-  // ---------- слушатель карточки для UI-подстраховки ----------
-  function onFull(e){
-    if(e && e.type==='complite'){
-      var meta=getActiveMeta();
-      var key=(meta.type||'movie')+':'+meta.tmdb_id;
-      var kp = kpByTmdb[key];
-      if(kp!=null) setTimeout(function(){ injectKpChip(kp); }, 120);
+  /* ====== ЛОГИКА ====== */
+  function decide(meta, cb){
+    var ks=keys(meta), local=readLocal();
+    for (var i=0;i<ks.length;i++){
+      var k=ks[i]; if (local.hasOwnProperty(k)) { cb(!!local[k], k); return; }
     }
+    withRemote(function(set){
+      if(set && meta.kp_id && set.has(meta.kp_id)) { cb(true, 'kp:'+meta.kp_id); return; }
+      cb(false, ks[0]||null);
+    });
   }
 
-  function boot(){
-    if(!window.Lampa || !Lampa.Listener || !Lampa.TMDB) return false;
-    patchTmdb();
-    Lampa.Listener.follow('full', onFull);
-    return true;
+  function kickoff(){
+    var meta=activeMeta();
+    if(!meta || (!meta.kp_id && !meta.tmdb_id && !meta.title)) return;
+    decide(meta, function(isWatched, keyUsed){
+      render(isWatched);
+      enableToggle(meta, keyUsed);
+      observeDetails();
+    });
   }
+
+  function observeDetails(){
+    var cont=details(); if(!cont || cont.getAttribute('data-hds-watch-observed')==='1') return;
+    var pend=false, mo=new MutationObserver(function(){ if(pend) return; pend=true; setTimeout(function(){ pend=false; kickoff(); },0); });
+    mo.observe(cont,{childList:true,subtree:true});
+    cont.setAttribute('data-hds-watch-observed','1');
+  }
+
+  function onFull(e){ if(e && e.type==='complite') setTimeout(kickoff,180); }
+  function boot(){ if(!window.Lampa||!Lampa.Listener) return false; Lampa.Listener.follow('full', onFull); return true; }
   (function wait(i){ i=i||0; if(boot()) return; if(i<200) setTimeout(function(){wait(i+1);},200); })();
 
 })();
