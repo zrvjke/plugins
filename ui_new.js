@@ -1,6 +1,6 @@
 /**
- * Lampa plugin: Hide Details Noise (v2.4.1-safe)
- *  - Movies: remove HH:MM in details line
+ * Lampa plugin: Hide Details Noise (v2.5.0-safe)
+ *  - Movies: remove HH:MM and "Качество: …" in details line
  *  - Series: remove Seasons/Episodes in details line + "Следующая … / Осталось дней: N"
  *  - Remove full Comments section (между «Актёры» → «Рекомендации/Коллекция»)
  *  - Remove full Seasons section (диапазон «Сезон …» → до «Актёры»)
@@ -31,18 +31,17 @@
   }
   function reflowAndRefresh(){
     try{
-      // обновить контроллеры Lampa, чтобы она пересчитала секции/якоря
       if (window.Lampa) {
         if (Lampa.Controller && typeof Lampa.Controller.update === 'function') Lampa.Controller.update();
         if (Lampa.Scroll && typeof Lampa.Scroll.update === 'function') Lampa.Scroll.update();
       }
-      // форс-рефлоу
       void document.body.offsetHeight;
       window.dispatchEvent(new Event('resize'));
     }catch(e){}
   }
 
   // ---------- details line ----------
+  // Seasons/Episodes
   var RU_SEASON  = '(?:сезон(?:а|ы|ов)?)';
   var RU_EPISODE = '(?:серия|серии|серий)';
   var RE_LABEL = new RegExp('^(?:'+RU_SEASON+'|'+RU_EPISODE+'|seasons?|episodes?)\\s*:?$','i');
@@ -50,13 +49,13 @@
   var RE_INLINE_EPISODE = new RegExp('^(?:'+RU_EPISODE+'|episodes?)\\s*:?\\s*\\d+$','i');
   var RE_INLINE_NUM_FIRST_SEASON  = new RegExp('^\\d+\\s*(?:'+RU_SEASON+'|seasons?)$','i');
   var RE_INLINE_NUM_FIRST_EPISODE = new RegExp('^\\d+\\s*(?:'+RU_EPISODE+'|episodes?)$','i');
-
   function isSeriesLabel(x){ return !!x && RE_LABEL.test(x); }
   function isSeriesInline(x){
     return !!x && (RE_INLINE_SEASON.test(x) || RE_INLINE_EPISODE.test(x) ||
                    RE_INLINE_NUM_FIRST_SEASON.test(x) || RE_INLINE_NUM_FIRST_EPISODE.test(x));
   }
 
+  // Next air / days left
   var RU_MONTH='(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)';
   var EN_MONTH='(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
   function isDatePiece(x){
@@ -68,6 +67,11 @@
   function hasRemain(x){ return /осталось\s*дней|days\s*left/i.test(x||''); }
   function isSlash(x){ return /^[/|\\-]$/.test((x||'').trim()); }
 
+  // Quality tokens (movies): "Качество: WEB-DL", "Качество TS", etc.
+  var RE_QUALITY_LABEL  = /^(?:качество|quality)\s*:?\s*$/i;
+  var RE_QUALITY_INLINE = /^(?:качество|quality)\s*:?\s*[\w\-\+\s]{2,}$/i;
+  var RE_QUALITY_VALUE  = /^(?:web[\s\-]?(?:dl|rip)|webrip|web|hdtv|hdrip|hdcam|cam(?:rip)?|ts|tc|telesync|telecine|bd(?:rip)?|bluray|remux|dvd(?:rip)?|uhd|4k|8k|sd|[1-9]\d{2,4}p)$/i;
+
   function stripDetails(container){
     if(!container) return;
     var spans=container.querySelectorAll('span');
@@ -76,20 +80,24 @@
     for(i=0;i<spans.length;i++){
       s=spans[i]; x=t(s);
 
+      // Movies: HH:MM
       if(isTime(x)){
         var p1=s.previousElementSibling, n1=s.nextElementSibling;
         if(isSep(p1)) del.push(p1); else if(isSep(n1)) del.push(n1);
         del.push(s); continue;
       }
-      if(isSeriesInline(x)){
-        var p2=s.previousElementSibling, n2=s.nextElementSibling;
-        if(isSep(p2)) del.push(p2); else if(isSep(n2)) del.push(n2);
+
+      // Movies: "Качество: …" (inline)
+      if(RE_QUALITY_INLINE.test(x)){
+        var pQ=s.previousElementSibling, nQ=s.nextElementSibling;
+        if(isSep(pQ)) del.push(pQ); else if(isSep(nQ)) del.push(nQ);
         del.push(s); continue;
       }
-      if(isSeriesLabel(x)){
-        var L=s.previousElementSibling; if(isSep(L)) del.push(L);
+      // Movies: split label "Качество" + value
+      if(RE_QUALITY_LABEL.test(x)){
+        var Lq=s.previousElementSibling; if(isSep(Lq)) del.push(Lq);
         var n=s.nextElementSibling; if(isSep(n)){ del.push(n); n=s.nextElementSibling; }
-        if(n && isNum(t(n))){
+        if(n && RE_QUALITY_VALUE.test(norm(t(n)))){
           var a=n.nextElementSibling; if(isSep(a)) del.push(a);
           del.push(n);
         } else {
@@ -97,6 +105,26 @@
         }
         del.push(s); continue;
       }
+
+      // Series: inline "Сезон 1" / "1 сезон" / "Серии: 8"
+      if(isSeriesInline(x)){
+        var p2=s.previousElementSibling, n2=s.nextElementSibling;
+        if(isSep(p2)) del.push(p2); else if(isSep(n2)) del.push(n2);
+        del.push(s); continue;
+      }
+      // Series: split label + number
+      if(isSeriesLabel(x)){
+        var L=s.previousElementSibling; if(isSep(L)) del.push(L);
+        var n2=s.nextElementSibling; if(isSep(n2)){ del.push(n2); n2=s.nextElementSibling; }
+        if(n2 && isNum(t(n2))){
+          var a2=n2.nextElementSibling; if(isSep(a2)) del.push(a2);
+          del.push(n2);
+        } else {
+          var r2=s.nextElementSibling; if(isSep(r2)) del.push(r2);
+        }
+        del.push(s); continue;
+      }
+      // "Следующая … / Осталось дней: N"
       if(hasNext(x) || hasRemain(x)){
         var pp=s.previousElementSibling; if(isSep(pp)) del.push(pp);
         del.push(s);
@@ -169,15 +197,14 @@
     rm(node);
     while(prev){
       if (hasHead(prev, RE_ACTORS)) break;
-      var txt = norm(t(prev)), cls=((prev.className||'')+'');
-      if (txt==='' || ANCHOR_CLASS_RE.test(cls) || RE_SEASONS_HEAD.test(txt) || RE_COMM_HEAD.test(txt)){
+      var tx = norm(t(prev)), cls=((prev.className||'')+'');
+      if (tx==='' || ANCHOR_CLASS_RE.test(cls) || RE_SEASONS_HEAD.test(tx) || RE_COMM_HEAD.test(tx)){
         var p = prev.previousElementSibling; rm(prev); prev=p; continue;
       }
       break;
     }
   }
 
-  // удалить блоки комментариев по заголовку
   function nukeComments(root){
     var scope=root||document, heads=scope.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,p');
     for (var i=0;i<heads.length;i++){
@@ -188,8 +215,6 @@
       }
     }
   }
-
-  // зачистка диапазона от Рекомендаций/Коллекции назад к Актёрам (мусор/якоря/комменты)
   function nukeBetweenActorsAndNext(root){
     var scope=root||document;
     var hActors=findHead(RE_ACTORS,scope);
@@ -210,8 +235,6 @@
       break;
     }
   }
-
-  // от Актёров вперёд — убрать мусор до живой секции
   function nukeForwardFromActors(root){
     var scope=root||document, hActors=findHead(RE_ACTORS,scope);
     if (!hActors) return;
@@ -230,14 +253,11 @@
       break;
     }
   }
-
-  // сезоны: диапазон «Сезон …» → до «Актёры»
   function nukeSeasonsRange(root){
     var scope=root||document, hSeas=findHead(RE_SEASONS_HEAD, scope);
     if (!hSeas) return;
     var start = climb(hSeas,10);
 
-    // убрать слева возможные заглушки/якоря
     var prev = start.previousElementSibling;
     while (prev){
       if (hasHead(prev, RE_ACTORS)) break;
@@ -264,7 +284,7 @@
     reflowAndRefresh();
   }
 
-  // ---------- CSS: отключаем anchoring только в зоне карточки + скрываем явные comments/review ----------
+  // ---------- CSS ----------
   function injectCssOnce(){
     if (document.getElementById('hds-safe-css')) return;
     var s=document.createElement('style');
@@ -293,7 +313,6 @@
         injectCssOnce();
       },25);
     });
-    // слушаем только карточку, чтобы не трогать главную/листы
     var roots=document.querySelectorAll('.full, .full-start, .full-start-new');
     for (var r=0;r<roots.length;r++) mo.observe(roots[r], {childList:true, subtree:true});
     rootObserved=true;
@@ -303,7 +322,6 @@
   function handleFull(e){
     if (!e || !e.type) return;
     if (e.type==='build' || e.type==='open' || e.type==='complite'){
-      // делаю всё после сборки, без вмешательства в процесс создания DOM
       setTimeout(function(){
         injectCssOnce();
         scanDetails(document);
@@ -341,3 +359,4 @@
   })();
 
 })();
+
