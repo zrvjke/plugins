@@ -1,73 +1,43 @@
-(function () {
+(function(){
   'use strict';
 
-  /*** 1) Где лежит твой список ***/
-  var KP_WATCH_JSON_URLS = [
-    // твой gist raw
-    'https://gist.githubusercontent.com/zrvjke/a8756cd00ed4e2a6653eb9fb33a667e9/raw/kp-watched.json',
-    // резерв — GitHub raw (если положишь туда)
-    'https://raw.githubusercontent.com/zrvjke/plugins/refs/heads/main/kp-watched.json'
-  ];
+  /* ========= НАСТРОЙКА: ТВОИ ССЫЛКИ ========= */
+  // 1) твой Gist Raw
+  var SRC_GIST = 'https://gist.githubusercontent.com/zrvjke/a8756cd00ed4e2a6653eb9fb33a667e9/raw/kp-watched.json';
+  // 2) на всякий — твой же файл в репозитории через jsDelivr (обычно проходит CORS)
+  var SRC_JSDELIVR = 'https://cdn.jsdelivr.net/gh/zrvjke/plugins@main/kp-watched.json';
+  // 3) canonical raw (на случай если включишь GitHub Pages/репозиторий)
+  var SRC_RAW_GH = 'https://raw.githubusercontent.com/zrvjke/plugins/main/kp-watched.json';
 
-  /*** 2) Ключ для api.kinopoisk.dev ***/
-  var KPDEV_KEY = 'KS9Z0SJ-5WCMSN8-MA3VHZK-V1ZFH4G'; // ← твой
+  // Локальные данные (можно оставить пустыми)
+  var KP_IDS_INLINE = [];          // [301, "535341", 123456]
+  var TITLE_MAP_INLINE = {};       // {"t:матрица|1999":603, "t:matrix|1999":603}
 
-  /*** 3) Отладка ***/
-  var WANT_DEBUG = false;
+  var REMOTE_TTL_MS = 12 * 60 * 60 * 1000; // 12 часов
+  var DEBUG = true;
 
-  /* ---------------- Internals ---------------- */
-
-  var LS_WATCH   = 'hds.kp.watch.set.v2'; // {ts, ids:[], titleMap:{}}
-  var LS_MAP     = 'hds.kp.cross.v2';     // { tmdb:<id> -> kpId, 't:<title>|<year>' -> kpId }
-  var WATCH_TTL  = 7 * 24 * 60 * 60 * 1000; // кэш списка на 7 дней
-  var MAP_TTL    = 60 * 24 * 60 * 60 * 1000; // карта соответствий на 60 дней
-
-  function noty(s){ try{ if(WANT_DEBUG && window.Lampa && Lampa.Noty) Lampa.Noty.show(String(s)); }catch(e){} }
+  /* ========= УТИЛИТЫ ========= */
+  function noty(s){ try{ if(DEBUG && window.Lampa && Lampa.Noty) Lampa.Noty.show(String(s)); }catch(e){} }
   function $(sel,root){ return (root||document).querySelector(sel); }
   function $all(sel,root){ return Array.prototype.slice.call((root||document).querySelectorAll(sel)); }
   function textOf(n){ return (n && (n.textContent||n.innerText)||'').replace(/\u00A0/g,' ').trim(); }
   function readLS(k,d){ try{ var v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch(e){ return d; } }
   function writeLS(k,v){ try{ localStorage.setItem(k, JSON.stringify(v)); }catch(e){} }
   function toNum(x){ if(typeof x==='number')return x; if(typeof x==='string'&&/^\d+$/.test(x))return +x; return NaN; }
-  function normTitle(s){ if(!s) return ''; s=(s+'').toLowerCase().replace(/[ё]/g,'е').replace(/[“”„"«»]/g,'').replace(/[.:;!?()\[\]{}]/g,'').replace(/[-–—]/g,' ').replace(/\s+/g,' ').trim(); return s; }
-  function keyFor(t,y){ return 't:'+normTitle(t)+'|'+(y||0); }
 
-  /* ------------ Парс карточки ------------ */
-  function activeMeta(){
-    var o={ type:'movie', tmdb_id:null, kp_id:null, imdb_id:null, title:'', original:'', year:0 };
-    try{
-      var act=Lampa.Activity && Lampa.Activity.active && Lampa.Activity.active();
-      if(act && act.activity){
-        var c=act.activity.card||{};
-        o.type=c.type || (act.activity.params && (act.activity.params.method||act.activity.params.content_type)) || 'movie';
-        o.tmdb_id=c.id || (act.activity.params && act.activity.params.id) || null;
-        o.kp_id=c.kinopoisk_id || c.kp_id || null;
-        o.imdb_id=c.imdb_id || null;
-        o.title=c.name||c.title||'';
-        o.original=c.original_name||c.original_title||'';
-        var d=c.release_date||c.first_air_date||''; var m=d&&d.match(/\b(19|20)\d{2}\b/); if(m) o.year=+m[0];
-      }
-    }catch(e){ console.error("Error in activeMeta:", e); }
-    if(!o.original) o.original=o.title;
-    return o;
+  function normTitle(s){
+    if(!s) return '';
+    s=(s+'').toLowerCase();
+    s=s.replace(/[ё]/g,'е').replace(/[“”„"«»]/g,'').replace(/[.:;!?()\[\]{}]/g,'').replace(/[-–—]/g,' ');
+    s=s.replace(/\s+/g,' ').trim();
+    return s;
+  }
+  function keyFor(title, year){
+    var t=normTitle(title);
+    return 't:'+t+'|'+(year||0);
   }
 
-  /* ------------ Куда рисовать ------------ */
-  var DETAILS_SEL=[ '.full-start__details','.full-start__info', '.full-start-new__details','.full-start-new__info', '.full-start__tags','.full-start-new__tags' ].join(', ');
-
-  function findDetailsContainers(){
-    var nodes=$all(DETAILS_SEL);
-    if(nodes.length) return nodes;
-    var root=$('.full-start, .full-start-new');
-    if(root){
-      var cands=$all('div,section',root).filter(function(el){
-        var t=textOf(el); return t && (el.querySelector('span')||el.querySelector('a'));
-      });
-      if(cands.length) return [cands[0]];
-    }
-    return [];
-  }
-
+  /* ========= CSS ========= */
   function ensureCss(){
     if (document.getElementById('hds-watch-css')) return;
     var st=document.createElement('style');
@@ -81,16 +51,66 @@
     document.head.appendChild(st);
   }
 
-  function ensureSplitAfter(node){
-    var next=node && node.nextElementSibling, need=true;
-    if(next){
-      var t=textOf(next), cls=(next.className||'')+''; 
-      if (/full-start.*__split/.test(cls) || /^[.\u2022\u00B7|\/]$/.test(t)) need=false;
+  /* ========= КОНТЕЙНЕР ДЕТАЛЕЙ ========= */
+  var DETAILS_SEL = [
+    '.full-start__details',
+    '.full-start__info',
+    '.full-start-new__details',
+    '.full-start-new__info',
+    '.full-start__tags',
+    '.full-start-new__tags'
+  ].join(', ');
+  function findDetailsContainers(){
+    var nodes = $all(DETAILS_SEL);
+    if (nodes.length) return nodes;
+    var root = $('.full-start, .full-start-new');
+    if (root){
+      var candidates=$all('div,section',root).filter(function(el){
+        var t=textOf(el); return t && (el.querySelector('span')||el.querySelector('a'));
+      });
+      if (candidates.length) return [candidates[0]];
     }
-    if(need && node && node.parentNode){
-      var s=document.createElement('span'); s.className='hds-watch-split'; s.textContent='·';
-      node.parentNode.insertBefore(s, node.nextSibling);
+    return [];
+  }
+
+  /* ========= ХРАНИЛКИ ========= */
+  var LS_MAP   = 'hds.watched.map.v6';     // локальные оверрайды
+  var LS_REMOTE= 'hds.watched.remote.v6';  // {ts, kpIds[], titleMap{}}
+
+  function readLocal(){ return readLS(LS_MAP, {}); }
+  function writeLocal(m){ writeLS(LS_MAP, m||{}); }
+
+  var remoteSet=null, remoteTitles=null, remoteTS=0, fetching=false, waiters=[];
+
+  function parseRemoteJson(j){
+    var arr = Array.isArray(j) ? j : (j && j.kpIds) || [];
+    var ids=[]; for (var i=0;i<arr.length;i++){ var n=toNum(arr[i]); if(n>0) ids.push(n); }
+    var set = ids.length ? new Set(ids) : null;
+
+    var tmap = null;
+    if (j && j.titleMap && typeof j.titleMap==='object'){
+      tmap={}; for (var k in j.titleMap){ var v=toNum(j.titleMap[k]); if(v>0) tmap[k]=v; }
     }
+    return {set:set, map:tmap};
+  }
+
+  /* ========= ЗАПУСК ========= */
+  function matchFromRemote(meta){
+    var local=readLocal(), cand=keys(meta), k, i;
+    for (i=0;i<cand.length;i++){ k=cand[i]; if(local.hasOwnProperty(k)) return {ok: !!local[k], key:k, src:'local'}; }
+
+    if (remoteSet && meta.kp_id) {
+      const kpNum = Number(meta.kp_id); // Преобразуем в число
+      if (!Number.isNaN(kpNum) && remoteSet.has(kpNum)) return {ok:true, key:'kp:' + meta.kp_id, src:'kp'};
+    }
+
+    if (remoteTitles){
+      var t1=keyFor(meta.title, meta.year), t2=keyFor(meta.original, meta.year);
+      var id = remoteTitles[t1] || remoteTitles[t2] || remoteTitles[keyFor(meta.title,0)] || remoteTitles[keyFor(meta.original,0)];
+      if (id && (!remoteSet || remoteSet.has(id))) return {ok:true, key:'kp:'+id, src:'title'};
+    }
+
+    return {ok:false, key:cand[0]||null, src:'none'};
   }
 
   function renderInto(cont, watched){
@@ -110,56 +130,90 @@
   function renderAll(watched){
     ensureCss();
     var list=findDetailsContainers();
-    if(!list.length) return false;
+    if(!list.length){ noty('details not found, retry…'); return false; }
     list.forEach(function(c){ renderInto(c, watched); });
     return true;
   }
 
-  /* ------------ Загрузка твоего списка ------------ */
-  var WATCH_SET=null;      // Set<number>
-  var WATCH_TITLEMAP={};   // опционально
+  function enableToggle(meta, resolvedKey){
+    var list=findDetailsContainers(); if(!list.length) return;
+    list.forEach(function(cont){
+      var flag=cont.querySelector('.hds-watch-flag'); if(!flag) return;
+      flag.onclick=function(e){
+        e.preventDefault(); e.stopPropagation();
+        var local=readLocal(), k=(resolvedKey||keys(meta)[0])||keyFor(meta.title||'', meta.year||0);
+        var next=!(local[k]===1); local[k]=next?1:0; writeLocal(local);
+        renderAll(next);
+        noty(next?'Пометила как просмотрено':'Сняла отметку «просмотрено»');
+      };
+    });
+  }
 
-  function applyWatchJson(obj){
-    var ids=null, map={};
-    if (Array.isArray(obj)){
-      ids=[]; for (var i=0;i<obj.length;i++){ var n=toNum(obj[i]); if(n>0) ids.push(n); }
-    } else if (obj && typeof obj==='object'){
-      if (Array.isArray(obj.kpIds)){
-        ids=[]; for (var j=0;j<obj.kpIds.length;j++){ var m=toNum(obj.kpIds[j]); if(m>0) ids.push(m); }
-      }
-      if (obj.titleMap && typeof obj.titleMap==='object'){
-        for (var k in obj.titleMap){ var v=toNum(obj.titleMap[k]); if(v>0) map[k]=v; }
-      }
+  function withRemote(cb){
+    // 0) inline
+    var inSet=null, inMap=null;
+    if (KP_IDS_INLINE && KP_IDS_INLINE.length){
+      inSet=new Set(); for (var i=0;i<KP_IDS_INLINE.length;i++){ var n=toNum(KP_IDS_INLINE[i]); if(n>0) inSet.add(n); }
     }
-    WATCH_SET = new Set(ids);
-    WATCH_TITLEMAP = map;
-    noty('Загружен список просмотренных');
-  }
-
-  function loadWatchJson(){
-    var urls = KP_WATCH_JSON_URLS;
-    var idx = 0;
-    function fetchNext(){
-      if (idx >= urls.length) return noty('Не удалось загрузить список просмотров');
-      var url = urls[idx++];
-      fetch(url)
-        .then(function(res) { return res.json(); })
-        .then(function(data) { applyWatchJson(data); })
-        .catch(function() { fetchNext(); });
+    if (TITLE_MAP_INLINE && typeof TITLE_MAP_INLINE==='object'){
+      inMap={}; for (var k in TITLE_MAP_INLINE){ var v=toNum(TITLE_MAP_INLINE[k]); if(v>0) inMap[k]=v; }
     }
-    fetchNext();
+    if (inSet || inMap){
+      remoteSet=inSet||null; remoteTitles=inMap||null; remoteTS=Date.now();
+      noty('INLINE: '+(remoteSet?remoteSet.size:0)+'; titles: '+(remoteTitles?Object.keys(remoteTitles).length:0));
+      cb(true); return;
+    }
+
+    // 1) cache
+    var cached = readLS(LS_REMOTE, null);
+    if (cached && Date.now()-(cached.ts||0)<REMOTE_TTL_MS){
+      var ids=cached.kpIds||[], set=null; if (ids.length){ set=new Set(); for (var i=0;i<ids.length;i++){ var n=toNum(ids[i]); if(n>0) set.add(n); } }
+      remoteSet=set; remoteTitles=cached.titleMap||null; remoteTS=cached.ts;
+      noty('REMOTE cache: '+(set?set.size:0)+'; titles: '+(remoteTitles?Object.keys(remoteTitles).length:0));
+      cb(true); return;
+    }
+
+    if (fetching){ waiters.push(cb); return; }
+    fetching=true;
+    var fallbacks = buildFallbacks(), idx=0;
+
+    function tryNext(){
+      if (idx>=fallbacks.length){
+        fetching=false; noty('REMOTE failed: no sources'); cb(false);
+        while(waiters.length) waiters.shift()(false);
+        return;
+      }
+      var url=fallbacks[idx++]; noty('FETCH: '+url.split('/')[2]);
+      fetchJSON(url, function(j){
+        var parsed = parseRemoteJson(j);
+        remoteSet = parsed.set; remoteTitles = parsed.map; remoteTS=Date.now();
+        writeLS(LS_REMOTE, {ts:remoteTS, kpIds: remoteSet?Array.from(remoteSet):[], titleMap: remoteTitles||{}}); 
+        fetching=false;
+        noty('REMOTE loaded: '+(remoteSet?remoteSet.size:0)+'; titles: '+(remoteTitles?Object.keys(remoteTitles).length:0));
+        cb(true);
+        while(waiters.length) waiters.shift()(true);
+      }, function(){ tryNext(); });
+    }
+    tryNext();
   }
 
-  /* ------------ Основной запуск ------------ */
-  function kickoff(){
-    var meta = activeMeta();
-    if(!meta || (!meta.title && !meta.year)) return;
-    loadWatchJson();
-    renderAll(false);
+  function kickoffOnce(){
+    var meta=activeMeta(); if(!meta || (!meta.tmdb_id && !meta.kp_id && !meta.title)) return;
+
+    if(!renderAll(false)) return;
+
+    withRemote(function(){
+      var r=matchFromRemote(meta);
+      if (r.ok){ renderAll(true); enableToggle(meta, r.key); noty('match: '+r.src); return; }
+      enableToggle(meta, r.key); // останется минус, но с локальным тумблером
+    });
+  }
+  
+  function boot(){
+    if(!window.Lampa||!Lampa.Listener) return false;
+    Lampa.Listener.follow('full', onFull); return true;
   }
 
-  // Запускаем плагин после загрузки
-  window.addEventListener('load', kickoff);
-
+  (function wait(i){ i=i||0; if(boot()) return; if(i<200) setTimeout(function(){wait(i+1);},200); })();
 })();
 
