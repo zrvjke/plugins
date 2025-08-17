@@ -1,19 +1,7 @@
-/**
- * Lampa plugin: Watched (Kinopoisk) — hybrid (v6)
- * Рендерит [+ Просмотрено]/[– Не просмотрено] в строке деталей.
- * Источник «просмотрено»: твой JSON-список + онлайн-поиск kpId, если он
- * отсутствует в карточке (по названию/году) через api.kinopoisk.dev.
- *
- * Настрой под себя 3 вещи ниже:
- *   1) KP_WATCH_JSON_URLS — ссылки на твой JSON (первой оставь актуальную).
- *   2) KPDEV_KEY — твой ключ api.kinopoisk.dev (для поиска kpId).
- *   3) WANT_DEBUG — включить нотификации для отладки.
- */
-
 (function () {
   'use strict';
 
-  /*** 1) где лежит твой список ***/
+  /*** 1) Где лежит твой список ***/
   var KP_WATCH_JSON_URLS = [
     // твой gist raw
     'https://gist.githubusercontent.com/zrvjke/a8756cd00ed4e2a6653eb9fb33a667e9/raw/kp-watched.json',
@@ -21,13 +9,13 @@
     'https://raw.githubusercontent.com/zrvjke/plugins/refs/heads/main/kp-watched.json'
   ];
 
-  /*** 2) ключ для api.kinopoisk.dev ***/
+  /*** 2) Ключ для api.kinopoisk.dev ***/
   var KPDEV_KEY = 'KS9Z0SJ-5WCMSN8-MA3VHZK-V1ZFH4G'; // ← твой
 
-  /*** 3) отладка ***/
+  /*** 3) Отладка ***/
   var WANT_DEBUG = false;
 
-  /* ---------------- internals ---------------- */
+  /* ---------------- Internals ---------------- */
 
   var LS_WATCH   = 'hds.kp.watch.set.v2'; // {ts, ids:[], titleMap:{}}
   var LS_MAP     = 'hds.kp.cross.v2';     // { tmdb:<id> -> kpId, 't:<title>|<year>' -> kpId }
@@ -44,7 +32,7 @@
   function normTitle(s){ if(!s) return ''; s=(s+'').toLowerCase().replace(/[ё]/g,'е').replace(/[“”„"«»]/g,'').replace(/[.:;!?()\[\]{}]/g,'').replace(/[-–—]/g,' ').replace(/\s+/g,' ').trim(); return s; }
   function keyFor(t,y){ return 't:'+normTitle(t)+'|'+(y||0); }
 
-  /* ------------ парс карточки ------------ */
+  /* ------------ Парс карточки ------------ */
   function activeMeta(){
     var o={ type:'movie', tmdb_id:null, kp_id:null, imdb_id:null, title:'', original:'', year:0 };
     try{
@@ -59,17 +47,13 @@
         o.original=c.original_name||c.original_title||'';
         var d=c.release_date||c.first_air_date||''; var m=d&&d.match(/\b(19|20)\d{2}\b/); if(m) o.year=+m[0];
       }
-    }catch(e){}
+    }catch(e){ console.error("Error in activeMeta:", e); }
     if(!o.original) o.original=o.title;
     return o;
   }
 
-  /* ------------ куда рисовать ------------ */
-  var DETAILS_SEL=[
-    '.full-start__details','.full-start__info',
-    '.full-start-new__details','.full-start-new__info',
-    '.full-start__tags','.full-start-new__tags'
-  ].join(', ');
+  /* ------------ Куда рисовать ------------ */
+  var DETAILS_SEL=[ '.full-start__details','.full-start__info', '.full-start-new__details','.full-start-new__info', '.full-start__tags','.full-start-new__tags' ].join(', ');
 
   function findDetailsContainers(){
     var nodes=$all(DETAILS_SEL);
@@ -96,10 +80,11 @@
       '.full-start__details, .full-start__info, .full-start-new__details, .full-start-new__info{display:flex;flex-wrap:wrap;align-items:center;gap:6px}';
     document.head.appendChild(st);
   }
+
   function ensureSplitAfter(node){
     var next=node && node.nextElementSibling, need=true;
     if(next){
-      var t=textOf(next), cls=(next.className||'')+'';
+      var t=textOf(next), cls=(next.className||'')+''; 
       if (/full-start.*__split/.test(cls) || /^[.\u2022\u00B7|\/]$/.test(t)) need=false;
     }
     if(need && node && node.parentNode){
@@ -107,6 +92,7 @@
       node.parentNode.insertBefore(s, node.nextSibling);
     }
   }
+
   function renderInto(cont, watched){
     if(!cont) return;
     var flag=cont.querySelector('.hds-watch-flag');
@@ -120,6 +106,7 @@
     flag.textContent = watched ? '+ Просмотрено' : '– Не просмотрено';
     ensureSplitAfter(flag);
   }
+
   function renderAll(watched){
     ensureCss();
     var list=findDetailsContainers();
@@ -128,7 +115,7 @@
     return true;
   }
 
-  /* ------------ загрузка твоего списка ------------ */
+  /* ------------ Загрузка твоего списка ------------ */
   var WATCH_SET=null;      // Set<number>
   var WATCH_TITLEMAP={};   // опционально
 
@@ -144,142 +131,35 @@
         for (var k in obj.titleMap){ var v=toNum(obj.titleMap[k]); if(v>0) map[k]=v; }
       }
     }
-    WATCH_SET = ids && ids.length ? new Set(ids) : null;
+    WATCH_SET = new Set(ids);
     WATCH_TITLEMAP = map;
-    writeLS(LS_WATCH, {ts:Date.now(), ids: ids||[], titleMap: map});
-    noty('watch loaded: ids '+(ids?ids.length:0)+' | titles '+Object.keys(map).length);
-    return !!(WATCH_SET || Object.keys(WATCH_TITLEMAP).length);
+    noty('Загружен список просмотренных');
   }
 
-  function tryWatchCache(){
-    var c=readLS(LS_WATCH,null);
-    if(!c || !c.ts || (Date.now()-c.ts)>WATCH_TTL) return false;
-    var ids=c.ids||[], set=null;
-    if(ids.length){ set=new Set(); for (var i=0;i<ids.length;i++){ var n=toNum(ids[i]); if(n>0) set.add(n); } }
-    WATCH_SET = set;
-    WATCH_TITLEMAP = c.titleMap||{};
-    noty('watch from cache');
-    return true;
-  }
-
-  function fetchJson(url){
-    return fetch(url, {method:'GET', cache:'no-store'})
-      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); });
-  }
-
-  function ensureWatchSet(cb){
-    if (WATCH_SET || Object.keys(WATCH_TITLEMAP).length){ cb(true); return; }
-    if (tryWatchCache()){ cb(true); return; }
-    // цепочка адресов
-    var list=KP_WATCH_JSON_URLS.slice(), i=0;
-    (function next(){
-      if(i>=list.length){ noty('не смог загрузить kp-watched.json'); cb(false); return; }
-      var u=list[i++]; noty('try '+u.split('/')[2]);
-      fetchJson(u).then(function(j){ if(applyWatchJson(j)) cb(true); else next(); })
-                  .catch(function(){ next(); });
-    })();
-  }
-
-  /* ------------ поиск kpId, если его нет ------------ */
-  function readMap(){ var m=readLS(LS_MAP, {}); if(!m.ts) m.ts=Date.now(); return m; }
-  function writeMap(m){ m.ts=Date.now(); writeLS(LS_MAP,m); }
-  function mapGet(key){ var m=readMap(); if(m[key]) return m[key]; return null; }
-
-  function bestKPDoc(list, year){
-    if(!list || !list.length) return null;
-    // 1) точное совпадение по году
-    var exact=list.find(function(d){ return d.year===year; });
-    if(exact) return exact;
-    // 2) ближайший по году
-    var best=list[0], diff=1e9;
-    for (var i=0;i<list.length;i++){
-      var d=list[i], cur=Math.abs((d.year||0)-(year||0));
-      if (cur<diff){ diff=cur; best=d; }
+  function loadWatchJson(){
+    var urls = KP_WATCH_JSON_URLS;
+    var idx = 0;
+    function fetchNext(){
+      if (idx >= urls.length) return noty('Не удалось загрузить список просмотров');
+      var url = urls[idx++];
+      fetch(url)
+        .then(function(res) { return res.json(); })
+        .then(function(data) { applyWatchJson(data); })
+        .catch(function() { fetchNext(); });
     }
-    return best;
+    fetchNext();
   }
 
-  function searchKPIdByTitle(title, year){
-    if(!KPDEV_KEY){ return Promise.resolve(null); }
-    var q = (title||'').trim(); if(!q) return Promise.resolve(null);
-    var url = 'https://api.kinopoisk.dev/v1.4/movie/search?query='+encodeURIComponent(q)+(year?('&year='+year):'')+'&limit=5';
-    return fetch(url, {headers:{'X-API-KEY':KPDEV_KEY}})
-      .then(function(r){ if(!r.ok) throw new Error('kpdev '+r.status); return r.json(); })
-      .then(function(j){
-        var docs = (j && j.docs) || [];
-        var doc = bestKPDoc(docs, year);
-        return doc ? toNum(doc.id) : null;
-      })
-      .catch(function(){ return null; });
-  }
-
-  function resolveKpId(meta, done){
-    // приоритет: уже есть в карточке
-    if (meta.kp_id){ done(toNum(meta.kp_id)||null, 'card'); return; }
-
-    // из кэша
-    var k1 = meta.tmdb_id ? (meta.type==='tv'?'tmdbtv:'+meta.tmdb_id : 'tmdb:'+meta.tmdb_id) : null;
-    var k2 = meta.title && meta.year ? keyFor(meta.title, meta.year) : null;
-    var k3 = meta.original && meta.year ? keyFor(meta.original, meta.year) : null;
-
-    var fromMap = (k1 && mapGet(k1)) || (k2 && mapGet(k2)) || (k3 && mapGet(k3));
-    if (fromMap){ done(toNum(fromMap)||null, 'cache'); return; }
-
-    // онлайн-поиск
-    var tryTitles = [];
-    if (meta.title)    tryTitles.push({t:meta.title, y:meta.year});
-    if (meta.original) tryTitles.push({t:meta.original, y:meta.year});
-
-    (function next(idx){
-      if (idx>=tryTitles.length){ done(null, 'miss'); return; }
-      var pair=tryTitles[idx];
-      searchKPIdByTitle(pair.t, pair.y).then(function(kp){
-        if (kp){
-          var map=readMap();
-          if (k1) map[k1]=kp;
-          map[keyFor(pair.t, pair.y||0)] = kp;
-          writeMap(map);
-          done(kp,'kpdev');
-        } else next(idx+1);
-      });
-    })(0);
-  }
-
-  /* ------------ логика «просмотрено» ------------ */
-  function isWatchedBySet(kpId){
-    if (!kpId) return false;
-    if (WATCH_SET && WATCH_SET.has(kpId)) return true;
-    // если есть titleMap (редкий случай) — не используем без kpId
-    return false;
-  }
-
+  /* ------------ Основной запуск ------------ */
   function kickoff(){
-    var meta=activeMeta(); if(!meta) return;
-    if(!renderAll(false)) return;
-
-    ensureWatchSet(function(){
-      resolveKpId(meta, function(kpId, src){
-        var watched = isWatchedBySet(kpId);
-        renderAll(!!watched);
-        noty('kpId '+(kpId||'—')+' via '+src+' → '+(watched?'watched':'not'));
-      });
-    });
+    var meta = activeMeta();
+    if(!meta || (!meta.title && !meta.year)) return;
+    loadWatchJson();
+    renderAll(false);
   }
 
-  function onFull(e){
-    if(!e) return;
-    if(e.type==='build'||e.type==='open'||e.type==='complite'){
-      if(WANT_DEBUG) noty('full:'+e.type);
-      setTimeout(kickoff, 150);
-    }
-  }
-  function boot(){
-    if(!window.Lampa||!Lampa.Listener) return false;
-    Lampa.Listener.follow('full', onFull); return true;
-  }
-  (function wait(i){ i=i||0; if(boot()) return; if(i<200) setTimeout(function(){wait(i+1);},200); })();
+  // Запускаем плагин после загрузки
+  window.addEventListener('load', kickoff);
 
 })();
-
-
 
