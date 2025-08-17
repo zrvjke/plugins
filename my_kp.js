@@ -6,12 +6,12 @@
   var SRC_JSDELIVR = 'https://cdn.jsdelivr.net/gh/zrvjke/plugins@main/kp-watched.json';
   var SRC_RAW_GH   = 'https://raw.githubusercontent.com/zrvjke/plugins/main/kp-watched.json';
 
+  var REMOTE_TTL_MS = 12 * 60 * 60 * 1000; // 12 часов кэш
+  var DEBUG = true; // включи подсказки
+
   // Локально вшитые (можно оставить пустыми)
   var KP_IDS_INLINE = [];      // [301, "535341", ...]
   var TITLE_MAP_INLINE = {};   // {"t:матрица|1999":603, ...}
-
-  var REMOTE_TTL_MS = 12 * 60 * 60 * 1000; // 12 часов
-  var DEBUG = false; // включи true, если нужно видеть всплывающие нотификации
 
   /* ====== Утилиты ====== */
   function noty(s){ try{ if(DEBUG && window.Lampa && Lampa.Noty) Lampa.Noty.show(String(s)); }catch(e){} }
@@ -96,7 +96,6 @@
     if(!o.original) o.original=o.title;
     return o;
   }
-
   function keys(meta){
     var arr=[];
     if (meta.kp_id)   arr.push('kp:'+meta.kp_id);
@@ -108,7 +107,7 @@
     return arr;
   }
 
-  /* ====== Рендер виджета ====== */
+  /* ====== Рендер ====== */
   function renderInto(cont, watched){
     if(!cont) return;
     var flag=cont.querySelector('.hds-watch-flag');
@@ -125,19 +124,19 @@
   function renderAll(watched){
     ensureCss();
     var list=findDetailsContainers();
-    if(!list.length){ noty('details not found, retry…'); return false; }
+    if(!list.length) return false;
     list.forEach(function(c){ renderInto(c, watched); });
     return true;
   }
 
-  /* ====== Хранилки ====== */
-  var LS_MAP    = 'hds.watched.map.v6';     // локальные оверрайды (ручные клики)
-  var LS_REMOTE = 'hds.watched.remote.v6';  // {ts, kpIds[], titleMap{}}
+  /* ====== Хранилки и загрузка списка ====== */
+  var LS_LOCAL  = 'hds.watched.local.v7';   // ручные клики
+  var LS_REMOTE = 'hds.watched.remote.v7';  // {ts, kpIds[], titleMap{}}
 
-  function readLocal(){ return readLS(LS_MAP, {}); }
-  function writeLocal(m){ writeLS(LS_MAP, m||{}); }
+  function readLocal(){ return readLS(LS_LOCAL, {}); }
+  function writeLocal(m){ writeLS(LS_LOCAL, m||{}); }
 
-  var remoteSet=null, remoteTitles=null, remoteTS=0, fetching=false, waiters=[];
+  var remoteSet=null, remoteTitles=null, fetching=false, waiters=[];
 
   function parseRemoteJson(j){
     var arr = Array.isArray(j) ? j : (j && j.kpIds) || [];
@@ -163,11 +162,11 @@
     fetch(url, {method:'GET', cache:'no-store'})
       .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
       .then(ok)
-      .catch(function(e){ noty('fetch fail: '+e.message); (fail||function(){})(); });
+      .catch(function(e){ noty('fetch fail '+url.split('/')[2]+': '+e.message); (fail||function(){})(); });
   }
 
   function withRemote(cb){
-    // 0) inline
+    // inline
     var inSet=null, inMap=null, i, n;
     if (KP_IDS_INLINE && KP_IDS_INLINE.length){
       inSet=new Set(); for (i=0;i<KP_IDS_INLINE.length;i++){ n=toNum(KP_IDS_INLINE[i]); if(n>0) inSet.add(n); }
@@ -176,56 +175,52 @@
       inMap={}; for (var k in TITLE_MAP_INLINE){ var v=toNum(TITLE_MAP_INLINE[k]); if(v>0) inMap[k]=v; }
     }
     if (inSet || inMap){
-      remoteSet=inSet||null; remoteTitles=inMap||null; remoteTS=Date.now();
-      noty('INLINE: '+(remoteSet?remoteSet.size:0)+'; titles: '+(remoteTitles?Object.keys(remoteTitles).length:0));
+      remoteSet=inSet||null; remoteTitles=inMap||null;
+      noty('INLINE loaded');
       cb(true); return;
     }
 
-    // 1) cache
     var cached = readLS(LS_REMOTE, null);
-    if (cached && Date.now()-(cached.ts||0)<REMOTE_TTL_MS){
+    if (cached && (Date.now()-(cached.ts||0) < REMOTE_TTL_MS)){
       var ids=cached.kpIds||[], set=null; if (ids.length){ set=new Set(); for (i=0;i<ids.length;i++){ n=toNum(ids[i]); if(n>0) set.add(n); } }
-      remoteSet=set; remoteTitles=cached.titleMap||null; remoteTS=cached.ts;
-      noty('REMOTE cache: '+(set?set.size:0)+'; titles: '+(remoteTitles?Object.keys(remoteTitles).length:0));
+      remoteSet=set; remoteTitles=cached.titleMap||null;
+      noty('REMOTE cache');
       cb(true); return;
     }
 
     if (fetching){ waiters.push(cb); return; }
     fetching=true;
-    var fallbacks = buildFallbacks(), idx=0;
+    var list=buildFallbacks(), idx=0;
 
     function tryNext(){
-      if (idx>=fallbacks.length){
-        fetching=false; noty('REMOTE failed: no sources'); cb(false);
-        while(waiters.length) waiters.shift()(false);
+      if (idx>=list.length){
+        fetching=false; noty('REMOTE failed');
+        cb(false); while(waiters.length) waiters.shift()(false);
         return;
       }
-      var url=fallbacks[idx++]; noty('FETCH: '+url.split('/')[2]);
+      var url=list[idx++]; noty('FETCH '+url.split('/')[2]);
       fetchJSON(url, function(j){
-        var parsed = parseRemoteJson(j);
-        remoteSet = parsed.set; remoteTitles = parsed.map; remoteTS=Date.now();
-        writeLS(LS_REMOTE, {ts:remoteTS, kpIds: remoteSet?Array.from(remoteSet):[], titleMap: remoteTitles||{}}); 
-        fetching=false;
-        noty('REMOTE loaded: '+(remoteSet?remoteSet.size:0)+'; titles: '+(remoteTitles?Object.keys(remoteTitles).length:0));
-        cb(true);
-        while(waiters.length) waiters.shift()(true);
+        var p=parseRemoteJson(j);
+        remoteSet=p.set; remoteTitles=p.map;
+        writeLS(LS_REMOTE, {ts:Date.now(), kpIds: remoteSet?Array.from(remoteSet):[], titleMap: remoteTitles||{}});
+        fetching=false; cb(true); while(waiters.length) waiters.shift()(true);
       }, function(){ tryNext(); });
     }
     tryNext();
   }
 
   function matchFromRemote(meta){
-    // 1) локальный ручной оверрайд
+    // ручной оверрайд
     var local=readLocal(), cand=keys(meta), k, i;
     for (i=0;i<cand.length;i++){ k=cand[i]; if(local.hasOwnProperty(k)) return {ok: !!local[k], key:k, src:'local'}; }
 
-    // 2) по kp_id
+    // по kp_id
     if (remoteSet && meta.kp_id){
       var kpNum = toNum(meta.kp_id);
       if (!isNaN(kpNum) && remoteSet.has(kpNum)) return {ok:true, key:'kp:'+kpNum, src:'kp'};
     }
 
-    // 3) по названию/году из titleMap (если есть)
+    // по названию/году (если есть titleMap)
     if (remoteTitles){
       var t1=keyFor(meta.title, meta.year), t2=keyFor(meta.original, meta.year);
       var id = remoteTitles[t1] || remoteTitles[t2] || remoteTitles[keyFor(meta.title,0)] || remoteTitles[keyFor(meta.original,0)];
@@ -249,22 +244,55 @@
     });
   }
 
+  /* ====== Ожидание DOM и ререндер ====== */
+  function waitForDetails(maxTries, delay, onReady){
+    var tries=0;
+    (function loop(){
+      var ok = findDetailsContainers().length>0;
+      if (ok) return onReady();
+      if (++tries>=maxTries) return; // не нашли — молча сдаёмся
+      setTimeout(loop, delay);
+    })();
+  }
+  function attachRootObserver(){
+    var root = $('.full-start, .full-start-new') || document.body;
+    if(!root || root.__hds_observed) return;
+    var pend=false, mo=new MutationObserver(function(){
+      if (pend) return; pend=true;
+      setTimeout(function(){ pend=false; kickoffOnce(); }, 80);
+    });
+    mo.observe(root, {childList:true, subtree:true});
+    root.__hds_observed = true;
+  }
+
+  /* ====== Основной цикл ====== */
   function kickoffOnce(){
     var meta=activeMeta(); if(!meta || (!meta.tmdb_id && !meta.kp_id && !meta.title)) return;
-    if(!renderAll(false)) return;
 
-    withRemote(function(){
-      var r=matchFromRemote(meta);
-      renderAll(!!r.ok);
-      enableToggle(meta, r.key);
-      noty('match: '+r.src+(r.ok?' ✓':' ×'));
-    });
+    // всегда сначала ставим «минус», чтобы было видно виджет
+    if (!renderAll(false)){
+      // контейнер ещё не дорисовался — подождём
+      waitForDetails(40, 100, function(){ renderAll(false); proceed(); });
+      attachRootObserver();
+      return;
+    }
+    proceed();
+
+    function proceed(){
+      withRemote(function(){
+        var r=matchFromRemote(meta);
+        renderAll(!!r.ok);
+        enableToggle(meta, r.key);
+        noty('match: '+r.src+(r.ok?' ✓':' ×'));
+      });
+    }
   }
 
   function onFull(e){
     if(!e) return;
     if(e.type==='build'||e.type==='open'||e.type==='complite'){
       setTimeout(kickoffOnce, 150);
+      attachRootObserver();
     }
   }
   function boot(){
@@ -273,3 +301,4 @@
   }
   (function wait(i){ i=i||0; if(boot()) return; if(i<200) setTimeout(function(){wait(i+1);},200); })();
 })();
+
